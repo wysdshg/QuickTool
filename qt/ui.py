@@ -640,7 +640,9 @@ class NoteWindow:
     绑到 Toplevel 的话，点击正文会经 bindtags 传播触发拖动，选不中文字。
     """
 
-    W, H = 470, 360
+    W, H = 520, 420        # 默认尺寸（cfg 里记过 note_w/note_h 则用记忆值）
+    MIN_W, MIN_H = 320, 240
+    MAX_W, MAX_H = 2400, 1600
     MAX_CHARS = 50000      # 累积上限，超出从头整段裁剪，防长时间使用爆内存
     HEAD_TAG = "seghead"
 
@@ -650,6 +652,13 @@ class NoteWindow:
         self._count = 0                 # 累计片段数
         self._first = 1                 # 现存最老的片段号（裁剪会推进）
         self.last_hwnd = last_hwnd      # 触发时的前台窗口（回搜用）
+
+        # 用户上一次调整过的窗口大小优先（无记忆/越界则回默认并夹紧）
+        cfg = getattr(app, "cfg", None)
+        self.W = self._clamp(int(cfg.get("note_w", self.W)) if cfg else self.W,
+                             self.MIN_W, self.MAX_W)
+        self.H = self._clamp(int(cfg.get("note_h", self.H)) if cfg else self.H,
+                             self.MIN_H, self.MAX_H)
 
         win = tk.Toplevel(app.root)
         self.win = win
@@ -673,6 +682,16 @@ class NoteWindow:
                                foreground=THEMES["dark"]["sub"],
                                font=(FONT_CN, 8))
 
+        # 右下角 resize 手柄：无边框窗没有系统缩放边框，自己补一个。
+        # place 叠在正文右下角（不占布局空间），便签类应用的惯例做法。
+        grip = tk.Label(win, text="◢", font=(FONT_CN, 10),
+                        fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                        cursor="bottom_right_corner")
+        grip.place(relx=1.0, rely=1.0, anchor="se")
+        grip.bind("<ButtonPress-1>", self._rs_start)
+        grip.bind("<B1-Motion>", self._rs_move)
+        self._grip = grip
+
         if text:
             self.append(text, source)
         self._place()
@@ -680,6 +699,14 @@ class NoteWindow:
         win.after(30, lambda: wa.set_tool_window(win.winfo_id(), True))
         win.focus_force()
         self.txt.focus_set()
+
+    @staticmethod
+    def _clamp(v, lo, hi):
+        try:
+            v = int(v)
+        except Exception:
+            return lo
+        return max(lo, min(hi, v))
 
     @property
     def count(self):
@@ -827,11 +854,63 @@ class NoteWindow:
     # ------------------------------------------------------------ 交互
     def _place(self):
         left, top, right, bottom = wa.get_work_area()
-        cx, cy = wa.get_cursor_pos()
         w, h = self.W, self.H
-        x = min(max(cx - w // 2, left + 4), right - w - 4)
-        y = min(max(cy - h // 2, top + 4), bottom - h - 4)
+        # 位置记忆优先（上次关窗的位置还在屏幕内就原样恢复），否则鼠标附近
+        x = y = None
+        cfg = getattr(self.app, "cfg", None)
+        if cfg is not None:
+            try:
+                sx = self._clamp(cfg.get("note_x", -9999), left, right - w - 4)
+                sy = self._clamp(cfg.get("note_y", -9999), top, bottom - h - 4)
+                if left <= sx <= right - w - 4 and top <= sy <= bottom - h - 4:
+                    x, y = sx, sy
+            except Exception:
+                x = y = None
+        if x is None:
+            cx, cy = wa.get_cursor_pos()
+            x = min(max(cx - w // 2, left + 4), right - w - 4)
+            y = min(max(cy - h // 2, top + 4), bottom - h - 4)
         self.win.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
+
+    def _rs_start(self, event):
+        """右下角手柄按下：记录拖拽起点与当前窗口尺寸。"""
+        self._rs = (event.x_root, event.y_root,
+                    self.win.winfo_width(), self.win.winfo_height())
+
+    def _rs_move(self, event):
+        """右下角拖拽缩放：左上角不动，只改宽高（夹紧到 MIN/MAX）。"""
+        try:
+            x0, y0, w0, h0 = self._rs
+        except AttributeError:
+            return
+        w = self._clamp(w0 + event.x_root - x0, self.MIN_W, self.MAX_W)
+        h = self._clamp(h0 + event.y_root - y0, self.MIN_H, self.MAX_H)
+        self.W, self.H = w, h             # 同步逻辑尺寸（保存时兜底用）
+        self.win.geometry(f"{w}x{h}")
+
+    def _save_geometry(self):
+        """把当前大小和位置写进配置（关窗时调用，下次原样恢复）。
+
+        winfo 读数在窗口未布局完时是 1，低于 MIN 说明不可信，用逻辑尺寸兜底
+        ——否则「打开即关」的便签会把记忆尺寸错误写成最小值，越关越小。
+        """
+        cfg = getattr(self.app, "cfg", None)
+        if cfg is None:
+            return
+        try:
+            w = self.win.winfo_width()
+            h = self.win.winfo_height()
+            if w < self.MIN_W:
+                w = self.W
+            if h < self.MIN_H:
+                h = self.H
+            cfg.set("note_w", int(w))
+            cfg.set("note_h", int(h))
+            cfg.set("note_x", int(self.win.winfo_x()))
+            cfg.set("note_y", int(self.win.winfo_y()))
+            cfg.save()
+        except Exception:
+            pass
 
     def _bind(self):
         win = self.win
@@ -863,6 +942,7 @@ class NoteWindow:
         if self.closed:
             return
         self.closed = True
+        self._save_geometry()          # 大小/位置记忆，下次原样恢复
         try:
             self.win.destroy()
         except Exception:
@@ -1184,7 +1264,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.1 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.2 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
