@@ -7,6 +7,7 @@ import time
 import tkinter as tk
 import zlib
 from tkinter import font as tkfont, ttk
+from tkinter.scrolledtext import ScrolledText
 
 from . import winapi as wa
 from .engines import ENGINES, engine_display_names
@@ -618,6 +619,263 @@ class PinWindow:
                 pass
 
 
+class NoteWindow:
+    """『置顶便签』：把选中的文字钉在屏幕一角，可反复累积、可直接编辑。
+
+    解决的是「读长文 / 问 AI 时被术语打断，回来找不到读到哪」的痛点：
+    选中那段话按热键，内容就搬到这个置顶小窗里，不占原文位置、不会丢。
+
+    设计要点：
+      - **单窗口累积**：一次阅读会话的所有片段追加到同一个窗口。截图是
+        「一张图一窗口」（图没法合并），文本可以累积，多开反而挡视线。
+        滚动顺序就是你的跳转历史 —— 窗口本身就是锚点栈的可视化。
+      - **可编辑**：查完术语可以把解释直接贴回片段下面，几轮下来这份便签
+        自动变成带原文上下文的学习笔记。
+      - **回搜**：把光标所在片段的开头几个字送进来源应用自己的查找框
+        （合成 Ctrl+F + Ctrl+V）。这是「回到原处」的实用解 —— 不去猜原文
+        位置，让应用自己搜自己，虚拟滚动 / Electron 客户端一律通吃。
+      - 零第三方依赖：ScrolledText 是 tkinter 自带的。
+
+    和 PinWindow 的差异：正文换成可编辑文本，所以拖动只绑工具条 ——
+    绑到 Toplevel 的话，点击正文会经 bindtags 传播触发拖动，选不中文字。
+    """
+
+    W, H = 470, 360
+    MAX_CHARS = 50000      # 累积上限，超出从头整段裁剪，防长时间使用爆内存
+    HEAD_TAG = "seghead"
+
+    def __init__(self, app, text="", source="", last_hwnd=None):
+        self.app = app
+        self.closed = False
+        self._count = 0                 # 累计片段数
+        self._first = 1                 # 现存最老的片段号（裁剪会推进）
+        self.last_hwnd = last_hwnd      # 触发时的前台窗口（回搜用）
+
+        win = tk.Toplevel(app.root)
+        self.win = win
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.attributes("-alpha", 0.98)
+        win.configure(bg=THEMES["dark"]["border"], cursor="arrow")
+
+        outer = tk.Frame(win, bg=THEMES["dark"]["border"])
+        outer.pack(fill="both", expand=True)
+        self._build_bar(outer)
+
+        self.txt = ScrolledText(
+            outer, wrap="word", undo=True,
+            bg=THEMES["dark"]["card"], fg=THEMES["dark"]["fg"],
+            insertbackground=THEMES["dark"]["fg"],
+            relief="flat", bd=0, padx=8, pady=6,
+            font=(FONT_CN, 10), spacing1=2, spacing3=2)
+        self.txt.pack(fill="both", expand=True)
+        self.txt.tag_configure(self.HEAD_TAG,
+                               foreground=THEMES["dark"]["sub"],
+                               font=(FONT_CN, 8))
+
+        if text:
+            self.append(text, source)
+        self._place()
+        self._bind()
+        win.after(30, lambda: wa.set_tool_window(win.winfo_id(), True))
+        win.focus_force()
+        self.txt.focus_set()
+
+    @property
+    def count(self):
+        return self._count
+
+    # ------------------------------------------------------------ 构建
+    def _build_bar(self, parent):
+        # 从右往左 pack，所以列表顺序是「最右的先写」
+        bar = tk.Frame(parent, bg=THEMES["dark"]["card"])
+        bar.pack(fill="x")
+        self._bar = bar
+        self.lbl = tk.Label(bar, text="便签 · Esc 关闭", font=(FONT_CN, 9),
+                            fg=THEMES["dark"]["sub"],
+                            bg=THEMES["dark"]["card"])
+        self.lbl.pack(side="left", padx=8, pady=3)
+        for txt, cmd in ((" ✕ ", self.close), (" 清空 ", self._clear),
+                         (" 存 txt ", self._save_txt),
+                         (" 复制 ", self._copy_all),
+                         (" 回搜 ", self._back_search)):
+            b = tk.Label(bar, text=txt, font=(FONT_CN, 9),
+                         fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
+                         cursor="hand2", padx=4)
+            b.pack(side="right")
+            b.bind("<Button-1>", lambda e, c=cmd: c())
+
+    def append(self, text, source=""):
+        """追加一条片段。段头 = 序号 + 时间 + 来源窗口标题（灰色小字）。"""
+        self._count += 1
+        stamp = time.strftime("%H:%M")
+        src = f" · {source}" if source else ""
+        head = f"── {self._count} · {stamp}{src} " + "─" * 10 + "\n"
+        self.txt.insert("end", head, self.HEAD_TAG)
+        start = self.txt.index("end-1c")
+        self.txt.insert("end", text.rstrip() + "\n\n")
+        end = self.txt.index("end-1c")
+        self.txt.tag_add(f"seg{self._count}", start, end)   # 回搜定位用
+        self._trim()
+        self.txt.see("end")
+        self.lbl.configure(text=f"便签 · {self._count} 段 · Esc 关闭")
+
+    def _trim(self):
+        try:
+            total = self.txt.count("1.0", "end", "chars")[0]
+        except Exception:
+            return
+        while total > self.MAX_CHARS and self._first < self._count:
+            rng = self.txt.tag_ranges(f"seg{self._first}")
+            if len(rng) < 2:
+                self._first += 1
+                continue
+            # 连段头一起删：正文起点往上一行就是段头
+            self.txt.delete(f"{str(rng[0])} linestart -1l", str(rng[1]))
+            self._first += 1
+            try:
+                total = self.txt.count("1.0", "end", "chars")[0]
+            except Exception:
+                break
+
+    # ------------------------------------------------------------ 动作
+    def _back_search(self):
+        """把光标所在片段的开头送进来源应用的查找框，让它自己搜。
+
+        虚拟滚动会回收屏幕外 DOM、Electron 应用常常不开可访问性树 ——
+        这些都难不倒「让应用自己搜自己」。不需要知道原文在哪，那段话的
+        前 60 个字符就够定位了。
+        """
+        kw = self._keyword_at_cursor()
+        if not kw:
+            self._toast("回搜", "把光标点到某一段里，再按回搜。")
+            return
+        if not self.last_hwnd:
+            self._toast("回搜", "没记录到来源窗口（用快捷键触发才会有）。")
+            return
+        wa.set_clipboard_text(kw)
+        wa.set_foreground(self.last_hwnd)
+        # 切窗口、开查找框都要时间：用 after 分步，绝不阻塞主线程
+        self.win.after(220, wa.send_ctrl_f)
+        self.win.after(420, wa.send_ctrl_v)
+        self._toast("已跳回原处搜索", kw[:40])
+
+    def _keyword_at_cursor(self):
+        """光标所在片段正文的前 60 字；光标不在任何片段内就取最后一段。"""
+        idx = self.txt.index("insert")
+        picked = ""
+        for n in range(self._first, self._count + 1):
+            rng = self.txt.tag_ranges(f"seg{n}")
+            if len(rng) < 2:
+                continue
+            s, e = str(rng[0]), str(rng[1])
+            if self.txt.compare(s, "<=", idx) and self.txt.compare(idx, "<=", e):
+                picked = self.txt.get(s, self._clip60(s, e))
+                break
+        if not picked:
+            rng = self.txt.tag_ranges(f"seg{self._count}")
+            if len(rng) >= 2:
+                s, e = str(rng[0]), str(rng[1])
+                picked = self.txt.get(s, self._clip60(s, e))
+        return picked.strip()
+
+    def _clip60(self, start, seg_end):
+        """段内前 60 字：+60c 可能越过段尾把下一段的段头带进来，裁到边界内。"""
+        end = f"{start} +60c"
+        if self.txt.compare(end, ">", seg_end):
+            end = seg_end
+        return end
+
+    def _copy_all(self):
+        text = self.txt.get("1.0", "end-1c")
+        if not text.strip():
+            self._toast("复制", "便签是空的。")
+            return
+        wa.set_clipboard_text(text)
+        self._toast("已复制全部", f"{len(text)} 字")
+
+    def _save_txt(self):
+        text = self.txt.get("1.0", "end-1c")
+        if not text.strip():
+            self._toast("保存", "便签是空的。")
+            return None
+        try:
+            d = note_save_dir()
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(
+                d, time.strftime("QuickTool_便签_%Y%m%d_%H%M%S.txt"))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception as exc:
+            self._toast("保存失败", str(exc))
+            return None
+        self._toast("便签已保存", path)
+        return path
+
+    def _clear(self):
+        n = self._count
+        self.txt.delete("1.0", "end")
+        self._count, self._first = 0, 1
+        self.lbl.configure(text="便签 · Esc 关闭")
+        self._toast("已清空", f"清掉了 {n} 段")
+
+    def _toast(self, title, text):
+        q = getattr(self.app, "q", None)
+        if q is not None:
+            q.put(("toast", (title, text)))
+
+    # ------------------------------------------------------------ 交互
+    def _place(self):
+        left, top, right, bottom = wa.get_work_area()
+        cx, cy = wa.get_cursor_pos()
+        w, h = self.W, self.H
+        x = min(max(cx - w // 2, left + 4), right - w - 4)
+        y = min(max(cy - h // 2, top + 4), bottom - h - 4)
+        self.win.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
+
+    def _bind(self):
+        win = self.win
+        win.bind("<Escape>", lambda e: self.close())
+        win.bind("<Control-s>", lambda e: self._save_txt())
+        win.bind("<Control-S>", lambda e: self._save_txt())
+        # 拖动只绑工具条：绑到 Toplevel 的话点击正文会经 bindtags 传播过来
+        self._bar.bind("<ButtonPress-1>", self._drag_start)
+        self._bar.bind("<B1-Motion>", self._drag_move)
+        win.bind("<ButtonPress-1>", self._raise, add="+")
+
+    def _raise(self, e=None):
+        try:
+            self.win.lift()
+        except Exception:
+            pass
+
+    def _drag_start(self, event):
+        self._dx, self._dy = event.x, event.y
+
+    def _drag_move(self, event):
+        try:
+            self.win.geometry(f"+{self.win.winfo_x() + event.x - self._dx}"
+                              f"+{self.win.winfo_y() + event.y - self._dy}")
+        except Exception:
+            pass
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        if getattr(self.app, "note_win", None) is self:
+            self.app.note_win = None
+
+
+def note_save_dir():
+    r"""便签导出目录：%USERPROFILE%\Documents\QuickTool\（文本文件不进图片库）。"""
+    return os.path.join(os.path.expanduser("~"), "Documents", "QuickTool")
+
+
 # ---------------------------------------------------------------- BMP -> PNG
 def _bmp_size(data):
     """从 BMP 文件头取宽高（像素）。"""
@@ -665,7 +923,7 @@ def _bmp_to_photo(data):
 
 
 def pin_save_dir():
-    """截图文件默认保存目录：%USERPROFILE%\Pictures\QuickTool\（同系统截屏惯例）。"""
+    r"""截图文件默认保存目录：%USERPROFILE%\Pictures\QuickTool\（同系统截屏惯例）。"""
     base = os.environ.get("USERPROFILE") or os.path.expanduser("~")
     return os.path.join(base, "Pictures", "QuickTool")
 
@@ -792,6 +1050,7 @@ class Settings(tk.Toplevel):
         for key, label in (("hotkey_translate", "划词翻译"),
                            ("hotkey_ocr", "截图翻译"),
                            ("hotkey_pin", "截图对照"),
+                           ("hotkey_note", "置顶便签"),
                            ("hotkey_settings", "打开设置"),
                            ("hotkey_quit", "退出程序")):
             var = tk.StringVar(value=self.cfg.get(key))

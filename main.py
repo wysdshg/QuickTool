@@ -48,11 +48,12 @@ from qt import ocr
 from qt.capture import get_selected_text, looks_translatable, normalize_text
 from qt.config import Config
 from qt.translator import Translator
-from qt.ui import MiniButton, PinWindow, Popup, RegionSelector, Settings
+from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
+                   RegionSelector, Settings)
 
 APP_VERSION = "1.6.0"
 
-HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN = 1, 2, 3, 4, 5
+HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
 WM_APP_MINI_TRANSLATE = wa.WM_APP + 4      # 迷你按钮点击 -> Win32 线程翻译
 WM_APP_OCR_RUN = wa.WM_APP + 6             # 截图选区完成 -> Win32 线程 OCR+翻译
@@ -68,11 +69,15 @@ HOTKEY_CANDIDATES = {
     HK_QUIT: ["Ctrl+Alt+Q", "Ctrl+Alt+Shift+Q", "Ctrl+Alt+X"],
     HK_OCR: ["Ctrl+Alt+A", "Ctrl+Alt+I", "Ctrl+Alt+P", "Ctrl+Alt+F9"],
     HK_PIN: ["Ctrl+Prtsc", "Ctrl+Alt+W", "Ctrl+Alt+D", "Ctrl+Alt+E"],
+    # 置顶便签：N = Note；顺延要避开上面已用的 D/E/W
+    HK_NOTE: ["Ctrl+Alt+N", "Ctrl+Alt+M", "Ctrl+Alt+B", "Ctrl+Alt+K"],
 }
 
-TRAY_SETTINGS, TRAY_QUIT, TRAY_OCR, TRAY_PIN = 1001, 1002, 1003, 1004
+TRAY_SETTINGS, TRAY_QUIT, TRAY_OCR, TRAY_PIN, TRAY_NOTE = (1001, 1002,
+                                                            1003, 1004, 1005)
 TRAY_ITEMS = [(TRAY_SETTINGS, "设置"), (TRAY_OCR, "截图翻译"),
-              (TRAY_PIN, "截图对照"), (0, None), (TRAY_QUIT, "退出")]
+              (TRAY_PIN, "截图对照"), (TRAY_NOTE, "置顶便签"),
+              (0, None), (TRAY_QUIT, "退出")]
 
 E2E_LOG = os.path.join(tempfile.gettempdir(), "QuickTool_e2e.log")
 
@@ -105,6 +110,9 @@ class App:
         self._selecting = False         # 截图选区流程进行中/刚结束（防钩子抢拖拽）
         self._ocr_img = None            # 抓屏 BMP 临时文件路径
         self.pin_wins = []              # 截图对照小窗列表（可多个并存）
+        self.note_win = None            # 置顶便签（单窗口累积，不并存多个）
+        self._last_hwnd = None          # 热键触发时的前台窗口（便签「回搜」切回用）
+        self._last_source = ""          # 同上的窗口标题（便签段头显示来源）
         # 后台 worker 队列：重活一律不放进 Win32 消息循环线程（见 _capture_worker）
         self._cap_q = queue.Queue()     # 抓词（模拟 Ctrl+C + 等剪贴板）
         self._cap_lock = threading.Lock()   # 非阻塞 acquire 当作"进行中"标志
@@ -159,6 +167,7 @@ class App:
         self.root.after(600, self._test_tray_open_settings)
         self.root.after(1000, self._test_mini_translate)
         self.root.after(2400, self._test_pin)   # 对照窗链路（不与 OCR 撞时序）
+        self.root.after(2900, self._test_note)  # 便签链路：pin 收尾后、OCR 之前
         self.root.after(3200, self._test_ocr)   # MINI_DONE(3s) 之后跑，OCR 完自己收尾
 
     def _test_pin(self):
@@ -187,6 +196,23 @@ class App:
         if snap:
             wa.clipboard_restore(snap)
             self._clip_snap = None
+
+    def _test_note(self):
+        """置顶便签链路自检：创建 -> 追加累积 -> 关闭，测完不留窗口。"""
+        try:
+            self.open_note("e2e note probe alpha segment", "E2E")
+            ok1 = bool(self.note_win and not self.note_win.closed)
+            self.open_note("second probe segment for accumulation", "E2E2")
+            total = self.note_win.count if self.note_win else 0
+            e2e_log(f"NOTE_SHOWN={ok1}")
+            e2e_log(f"NOTE_TOTAL={total}")
+            self.root.after(200, self._close_note_after_test)
+        except Exception as exc:
+            e2e_log(f"NOTE_SHOWN=False:{type(exc).__name__}")
+
+    def _close_note_after_test(self):
+        if self.note_win and not self.note_win.closed:
+            self.note_win.close()
 
     def _test_ocr(self):
         """截图翻译链路自检：探测 OCR 语言包可用性。
@@ -293,6 +319,8 @@ class App:
             return
         if any(not w.closed for w in self.pin_wins):   # 对照窗开着也不抢
             return
+        if self.note_win and not self.note_win.closed:  # 便签窗开着也不抢
+            return
         if self.popup_open:                      # 悬浮窗开着就不打扰
             return
         if not (self.cfg.get("mini_button", True)):
@@ -330,6 +358,8 @@ class App:
                     self._capture_for_drag(payload)
                 elif kind == "hotkey":
                     self._capture_for_hotkey()
+                elif kind == "note":
+                    self._capture_for_note()
             except Exception:
                 ls.log_exc("CAPTURE-ERROR")
                 traceback.print_exc()
@@ -358,6 +388,15 @@ class App:
             self.q.put(("toast", ("这段内容看起来不是自然语言", text[:160])))
             return
         self._translate_text(text)
+
+    def _capture_for_note(self):
+        """便签抓词：不做「是否自然语言」过滤——代码、术语、公式也该能钉。"""
+        text = get_selected_text(first_timeout=0.25)
+        if not text:
+            self.q.put(("toast", ("未获取到选中文本",
+                                  "请先选中文字，再按置顶便签快捷键。")))
+            return
+        self.q.put(("note_text", (text, self._last_source)))
 
     def _job_worker(self):
         """慢任务线程（JobWorker）：联网翻译 / 截图 OCR。"""
@@ -390,7 +429,8 @@ class App:
                 (HK_SETTINGS, self.cfg.get("hotkey_settings")),
                 (HK_QUIT, self.cfg.get("hotkey_quit")),
                 (HK_OCR, self.cfg.get("hotkey_ocr")),
-                (HK_PIN, self.cfg.get("hotkey_pin"))]
+                (HK_PIN, self.cfg.get("hotkey_pin")),
+                (HK_NOTE, self.cfg.get("hotkey_note"))]
 
     def _try_register(self, hid, hotkey):
         try:
@@ -402,7 +442,8 @@ class App:
                    HK_SETTINGS: "hotkey_settings",
                    HK_QUIT: "hotkey_quit",
                    HK_OCR: "hotkey_ocr",
-                   HK_PIN: "hotkey_pin"}
+                   HK_PIN: "hotkey_pin",
+                   HK_NOTE: "hotkey_note"}
 
     def _maybe_upgrade_hotkey(self, hid, hotkey):
         """顺延产物自动升级：配置里若存的是『被占用后顺延』的临时组合（即候选列表
@@ -444,7 +485,8 @@ class App:
         另外本程序内部不允许两个功能抢同一组合（后注册的直接走顺延）。
         """
         labels = {HK_TRANSLATE: "划词翻译", HK_SETTINGS: "打开设置",
-                  HK_QUIT: "退出程序", HK_OCR: "截图翻译", HK_PIN: "截图对照"}
+                  HK_QUIT: "退出程序", HK_OCR: "截图翻译", HK_PIN: "截图对照",
+                  HK_NOTE: "置顶便签"}
         failed, notes = [], []
         used = set()
         for hid, hotkey in self._hotkey_map():
@@ -524,6 +566,13 @@ class App:
                 self.q.put(("ocr_select", None))
             elif wparam == HK_PIN:
                 self.q.put(("pin_select", None))
+            elif wparam == HK_NOTE:
+                # 此刻前台还是用户正在读的窗口（抓词模拟 Ctrl+C 后焦点可能
+                # 变化），立刻记下句柄和标题——便签「回搜」靠它切回去
+                hwnd = wa.get_foreground_window()
+                self._last_hwnd = hwnd
+                self._last_source = wa.get_window_title(hwnd)
+                self.q.put(("note", None))
             elif wparam == HK_SETTINGS:
                 self.q.put(("settings", None))
             elif wparam == HK_QUIT:
@@ -549,6 +598,11 @@ class App:
                     self.q.put(("ocr_select", None))
                 elif cmd == TRAY_PIN:
                     self.q.put(("pin_select", None))
+                elif cmd == TRAY_NOTE:
+                    hwnd = wa.get_foreground_window()
+                    self._last_hwnd = hwnd
+                    self._last_source = wa.get_window_title(hwnd)
+                    self.q.put(("note", None))
                 elif cmd == TRAY_QUIT:
                     self.q.put(("quit", None))
             return True
@@ -623,6 +677,11 @@ class App:
             self.open_ocr()
         elif kind == "pin_select":
             self.open_pin()
+        elif kind == "note":
+            self._request_capture("note")
+        elif kind == "note_text":
+            text, source = payload
+            self.open_note(text, source)
         elif kind == "pin_close":
             for w in list(self.pin_wins):
                 w.close()
@@ -803,6 +862,22 @@ class App:
             # 刚写入的 CF_DIB 还原覆盖（v1.5.3 竞态修复）。
             self._selecting = False
 
+    def open_note(self, text, source=""):
+        """置顶便签：单窗口累积——已有便签就追加一段，没有就新建。"""
+        if self.note_win is not None and not self.note_win.closed:
+            self.note_win.append(text, source)
+            ls.get_logger().info("NOTE-APPEND total=%s", self.note_win.count)
+        else:
+            try:
+                self.note_win = NoteWindow(self, text, source,
+                                           last_hwnd=self._last_hwnd)
+            except Exception as exc:
+                ls.log_exc("NOTE-FAIL")
+                self.q.put(("toast", ("便签创建失败", str(exc))))
+                return
+            ls.get_logger().info("NOTE-SHOW chars=%s", len(text))
+        e2e_log(f"NOTE_SHOWN count={self.note_win.count}")
+
     def open_settings(self):
         if self.settings is not None:
             try:
@@ -852,6 +927,8 @@ class App:
             self.mini_btn.close()
         for w in list(self.pin_wins):
             w.close()
+        if self.note_win:
+            self.note_win.close()
         if self.hwnd:
             wa.post_message(self.hwnd, wa.WM_DESTROY)   # 触发 PostQuitMessage
         self.root.after(150, self._destroy)

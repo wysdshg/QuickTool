@@ -20,6 +20,7 @@ DEFAULTS = {
     "hotkey_quit": "Ctrl+Alt+Q",
     "hotkey_ocr": "Ctrl+Alt+A",       # 截图翻译（被占用时自动顺延）
     "hotkey_pin": "Ctrl+Prtsc",       # 截图对照小窗（框选截屏置顶对照）
+    "hotkey_note": "Ctrl+Alt+N",      # 置顶便签（划词后钉到屏幕，可累积多段）
 
     # ---------------- 翻译引擎 ----------------
     "engine": "mymemory",                 # 主引擎

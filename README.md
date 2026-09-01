@@ -8,6 +8,7 @@
 | **鼠标拖选文字** | 松手后自动在光标旁弹出「译」圆形迷你按钮，点一下即翻译 |
 | `Ctrl+Alt+A` | 截图翻译（OCR，被占用自动顺延） |
 | `Ctrl+Prtsc` | 截图对照（框选截屏 → 置顶小窗，v1.5 新增；v1.5.2 起自动进剪贴板可 Ctrl+V，小窗内 `Ctrl+S` 存 PNG） |
+| `Ctrl+Alt+N` | 置顶便签（选中文字钉到置顶小窗，可累积多段，v1.6 新增；被占用自动顺延） |
 | `Ctrl+Alt+S` | 打开设置（被占用自动顺延到 `Ctrl+Alt+Shift+S`） |
 | `Ctrl+Alt+Q` | 退出程序（被占用自动顺延） |
 | `Esc` / 点击别处 / 再按一次热键 | 关闭悬浮窗 |
@@ -367,7 +368,37 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **修复**：还原前校验剪贴板序列号——`seq` 变了但读不到文本（截屏是 CF_DIB 位图）＝外部写入，`seq_last` 保持初始值，还原守卫因序列号不匹配**放弃还原**；只有真正读到文本（我们的 Ctrl+C 复制生效）才更新 `seq_last` 并放行还原。
 - 验证：smoke **70/70**（新增「抓词期间外部截屏写入不被旧快照冲掉」+「无外部写入时还原仍正常」2 项）、e2e 11/11×2。
 
+**v1.6.0 项目更名 QuickTrans → QuickTool + 置顶便签**（2026-09-01）：
+- **更名**：源码/文档/打包 spec/运行时路径（`%APPDATA%\QuickTool`、`Pictures\QuickTool`、日志文件名）全量替换，GitHub 仓库名 `QuickTool` 对齐。旧 `QuickTrans` 目录保留作回滚备份，历史日志不改写。
+- **置顶便签（新功能）**：见 4.12 节。选中文字 → `Ctrl+Alt+N` → 钉到置顶便签窗，单窗口累积、可直接编辑、支持回搜原处。
+- 验证：smoke **93/93**（新增便签 22 项）、e2e 13/13×2（新增 `NOTE_SHOWN`/`NOTE_TOTAL` 探针）。
+
 **如果以后再出现**：取 `logs\QuickTool.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
+
+### 4.12 置顶便签（v1.6 新增）
+
+**解决"读长文被术语/长段落打断，回来找不到读到哪"的场景**：选中那段文字按 `Ctrl+Alt+N`（被占用自动顺延到 `Ctrl+Alt+M` → …）或点托盘菜单"置顶便签" → 内容被**搬运**到屏幕角落的置顶便签窗（470×360），原文位置不受任何影响。
+
+**和截图对照（4.8）的本质区别**：截图对照解决"**看**别处的东西"（一张图一窗口），便签解决"**读过的文字暂存**"（多段累积到同一窗口）。文本可以合并，所以单窗口累积就是正确形态——滚动顺序本身就是你的跳转历史。
+
+| 能力 | 实现 | 设计理由 |
+|---|---|---|
+| 单窗口累积 | `app.note_win` 单例；已有便签就 `append` 追加一段，没有才新建 | 多开挡视线；段头 `── 序号 · 时间 · 来源窗口标题 ──` 灰色小字记录出处 |
+| 段定位 | 每段正文打 `seg{n}` tag，光标用 `compare()` 判断所在段 | tag 定位不受行号漂移/文字增删影响 |
+| 回搜 | 光标所在段**前 60 字**进剪贴板 → `SetForegroundWindow` 切回来源窗口 → 合成 `Ctrl+F` + `Ctrl+V` | **让应用自己搜自己**：不猜原文位置，借目标应用自带的查找框。虚拟滚动回收 DOM、Electron 不开可访问性树都拦不住 |
+| 可编辑 | `ScrolledText`（tkinter 自带，零依赖） | 查完术语把解释贴回片段下面，自动形成带上下文的学习笔记 |
+| 裁剪 | 超 50000 字从最老段整段连头删除（`_first` 推进） | 长时间使用不爆内存；最老的最可能已经不需要 |
+| 保存/复制 | 存 txt 到 `%USERPROFILE%\Documents\QuickTool\`（Ctrl+S 同效）；「复制」全量进剪贴板 | 文本文件不进图片库，与截图分目录 |
+| 不做翻译过滤 | 抓词不走 `looks_translatable` | 代码、术语、公式也该能钉——这是与划词翻译的关键差异 |
+
+> ⚠️ 关键实现细节：
+> - **拖动只绑工具条 Frame**：Text 控件事件会沿 bindtags（widget→class→toplevel→all）传播到 Toplevel——拖动若绑在 Toplevel 上，点击正文字会触发拖动、选不中字。父 Frame 不在 Text 的 bindtags 链上，天然免疫。
+> - **来源窗口在热键触发瞬间记录**：`_on_message` 跑在 Win32 线程，此刻前台还是用户正在读的窗口；抓词的模拟 Ctrl+C 之后前台可能已变，必须**立刻**记 `GetForegroundWindow()` + 标题。
+> - **回搜关键词裁剪到段边界**：`+60c` 会越过段尾把下一段段头（`── 2 · 时间 · 来源`）混进搜索词，须与段尾 `compare` 后取近者（smoke 防回归项）。
+> - **便签打开期间 `_handle_drag_end` 忽略拖选**（同 `ocr_selector`/`pin_wins` 守卫）——不然在便签里选字会弹迷你按钮。
+> - **Esc 关窗**；`_trim` 连段头一起删（正文起点上一行就是段头）。
+
+**回搜为什么是杀手级增强**：传统"回到原处"方案（记录滚动位置 / DOM 路径）在虚拟滚动和 Electron 应用面前全线溃败，而"复制前 60 字 → 让应用自己的 Ctrl+F 去搜"两步组合完全不依赖对方实现——查找框是每个应用都有的、最不可能坏的功能。
 
 ---
 
@@ -445,6 +476,7 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
   "hotkey_translate": "Ctrl+Q",         // 划词翻译（被占用自动顺延到 Ctrl+Alt+T → Ctrl+Alt+F1 → …）
   "hotkey_ocr":       "Ctrl+Alt+A",     // 截图翻译（被占用自动顺延到 Ctrl+Alt+I → …）
   "hotkey_pin":       "Ctrl+Prtsc",     // 截图对照小窗（被占用自动顺延到 Ctrl+Alt+W → …）
+  "hotkey_note":      "Ctrl+Alt+N",     // 置顶便签（被占用自动顺延到 Ctrl+Alt+M → …）
   "hotkey_settings":  "Ctrl+Alt+S",     // 打开设置（被占用自动顺延并记住，不再每次报错）
   "hotkey_quit":      "Ctrl+Alt+Q",     // 退出（被占用自动顺延）
   "engine": "mymemory",                 // 主引擎

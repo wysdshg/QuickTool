@@ -82,6 +82,8 @@ VK_MENU = 0x12          # Alt
 VK_SHIFT = 0x10
 VK_LWIN = 0x5B
 VK_C = 0x43
+VK_F = 0x46             # 查找：浏览器 / 阅读器 / Electron 应用通用的 Ctrl+F
+VK_V = 0x56             # 粘贴
 VK_SNAPSHOT = 0x2C      # PrintScreen / PrtSc
 
 # 托盘
@@ -342,6 +344,57 @@ def send_ctrl_c():
         _key(VK_CONTROL), _key(VK_C),
         _key(VK_C, up=True), _key(VK_CONTROL, up=True),
     ])
+
+
+def send_ctrl_v():
+    _send_input([
+        _key(VK_CONTROL), _key(VK_V),
+        _key(VK_V, up=True), _key(VK_CONTROL, up=True),
+    ])
+
+
+def send_ctrl_f():
+    """合成 Ctrl+F：让目标应用自己打开查找框（回搜功能的基础）。
+
+    为什么不用 UIA / 可访问性树去定位原文：虚拟滚动的 AI 对话界面屏幕外
+    内容拿不到，Electron 应用又常常不开可访问性。而「让应用自己搜」这条路
+    对所有有搜索框的程序都成立，且不需要任何权限。
+    """
+    _send_input([
+        _key(VK_CONTROL), _key(VK_F),
+        _key(VK_F, up=True), _key(VK_CONTROL, up=True),
+    ])
+
+
+def get_foreground_window():
+    """当前前台窗口句柄（热键触发时记录，用于「回搜」切回原应用）。"""
+    return user32.GetForegroundWindow()
+
+
+def set_foreground(hwnd):
+    """把窗口提到前台。SetForegroundWindow 有诸多限制（如前台进程未授权时
+    只闪任务栏），但用户刚从那个窗口按过热键，通常能成功；失败不抛异常。"""
+    if not hwnd:
+        return False
+    try:
+        return bool(user32.SetForegroundWindow(hwnd))
+    except Exception:
+        return False
+
+
+def get_window_title(hwnd):
+    """取窗口标题（便签记录来源用）。失败返回空串，绝不抛异常。"""
+    if not hwnd:
+        return ""
+    try:
+        n = user32.GetWindowTextLengthW(hwnd)
+        if n <= 0:
+            return ""
+        buf = ctypes.create_unicode_buffer(n + 1)
+        user32.GetWindowTextW(hwnd, buf, n + 1)
+        return buf.value
+    except Exception:
+        return ""
 
 
 def get_cursor_pos():
