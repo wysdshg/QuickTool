@@ -1012,6 +1012,11 @@ class Settings(tk.Toplevel):
         tk.Label(r, text=label, width=12, anchor="w", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
         widget.pack(in_=r, side="left", fill="x", expand=True)
+        # in_ 只改几何归属，不改 z-order：widget 创建早于 r（二者是兄弟窗口），
+        # 后创建的 r 会盖住 widget —— 输入框看不见值也点不到（v1.6.1 报障：
+        # 所有输入框点不了 + 不显示当前快捷键）。把行 Frame 压到 stacking
+        # 最底层，让 widget 露出来。
+        r.lower()
         if hint:
             tk.Label(r, text=hint, fg="#8a94a6", bg="#f5f7fa",
                      font=("Microsoft YaHei UI", 8)).pack(in_=r, side="left", padx=6)
