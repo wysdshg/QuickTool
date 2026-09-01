@@ -361,6 +361,12 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **选区完成瞬间钩子误判拖拽为划词**：框选 LEFTUP 后 `close()` 先把 `ocr_selector` 置 None、`pin_wins` 尚未 append，钩子的 `WM_APP_DRAG_END` 到达时守卫双双放行 → `get_selected_text` 快照/还原剪贴板，把刚写入的 CF_DIB 覆盖成旧内容（用户截图后 Ctrl+V 粘到旧文本）。修复：加 `App._selecting` 选区流程标志（`open_pin`/`open_ocr` 置位，完成回调 `finally` 清除，取消路径 `close()` 清除），`_handle_drag_end` 第一道守卫拦住。
 - 验证：smoke **68/68**（新增孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消 / 选区流程中钩子不抢拖拽 / 结束后正常抓词 5 项）、e2e 11/11×2、`pin_full_app.py` `FULL_APP_PIN PASS`×2（CLIP_DIB 稳定 0.0s）。**注意**：跑真 App 驱动测试前须确认没有旧 QuickTrans 实例在后台（其 WH_MOUSE_LL 钩子会把注入的拖拽当划词、快照还原剪贴板，导致 CF_DIB 探针误报）——`tasklist | findstr QuickTrans` 先杀干净。
 
+**v1.5.4 抓词还原竞态修复——普通 PrtSc 截屏不再被旧图覆盖**（2026-09-01）：
+- **症状**：先 `Ctrl+Prtsc` 截图对照（CF_DIB 进剪贴板），再按普通 PrtSc 系统截屏，Win+V / 直接 Ctrl+V 粘出来的是**上一次 Ctrl+Prtsc 的旧图**，退出软件后正常。
+- **根因**：拖选（≥6px）会触发抓词，`get_selected_text` 流程为「快照剪贴板（含上次 Ctrl+Prtsc 的 CF_DIB）→ 模拟 Ctrl+C → 轮询 → **无条件 `clipboard_restore(snapshot)`**」。抓词失败时轮询窗口长达 ~0.76s（0.25s + 0.06s + 0.45s），用户在此期间按普通 PrtSc，Windows 刚把新截屏写进剪贴板，restore 的 `EmptyClipboard()` 就把新截屏冲掉、再写回旧快照（日志实证：13:34~13:45 大量 `len=0` 失败抓词，每次 ~0.75s 窗口）。
+- **修复**：还原前校验剪贴板序列号——`seq` 变了但读不到文本（截屏是 CF_DIB 位图）＝外部写入，`seq_last` 保持初始值，还原守卫因序列号不匹配**放弃还原**；只有真正读到文本（我们的 Ctrl+C 复制生效）才更新 `seq_last` 并放行还原。
+- 验证：smoke **70/70**（新增「抓词期间外部截屏写入不被旧快照冲掉」+「无外部写入时还原仍正常」2 项）、e2e 11/11×2。
+
 **如果以后再出现**：取 `logs\QuickTrans.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
 
 ---
@@ -582,4 +588,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTrans v1.5.3 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTrans v1.5.4 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*

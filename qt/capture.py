@@ -62,7 +62,10 @@ def get_selected_text(timeout=0.45, retries=2, first_timeout=None):
     关键点：
       1. 抓之前先把 Ctrl/Alt/Shift 抬起来，否则热键的修饰键会和 Ctrl+C 混在一起；
       2. 用剪贴板「序列号」判断复制是否完成，而不是盲等固定毫秒；
-      3. 无论成功失败都还原剪贴板，用户之前复制的图片/文件不会被冲掉。
+      3. 无论成功失败都还原剪贴板，用户之前复制的图片/文件不会被冲掉；
+         但只在我们最后一次写入后剪贴板没被外部改过时才还原（v1.5.4：
+         期间若系统截屏/其他程序/用户自己写了剪贴板，还原的 EmptyClipboard
+         会把别人的新内容冲掉，必须放弃还原）。
 
     first_timeout：首轮等待时长（默认同 timeout）。大多数程序复制是瞬时的，
     首轮用更短的等待可以让「根本没选中内容」的场景快速失败；慢程序由后续
@@ -72,6 +75,7 @@ def get_selected_text(timeout=0.45, retries=2, first_timeout=None):
     snapshot = wa.clipboard_snapshot()
     prev_seq = wa.get_clipboard_sequence()
     text = ""
+    seq_last = prev_seq              # 我们最后一次写入剪贴板后的序列号
 
     for attempt in range(retries):
         wa.release_modifiers()
@@ -84,6 +88,11 @@ def get_selected_text(timeout=0.45, retries=2, first_timeout=None):
                 candidate = wa.get_clipboard_text()
                 if candidate and candidate.strip():
                     text = candidate
+                    # 只有读到了文本才说明是我们的 Ctrl+C 复制生效，记下此刻
+                    # 序列号；seq 变了但读不到文本（如系统截屏写的是 CF_DIB
+                    # 位图）是外部写入，seq_last 必须保持 prev_seq——这样下面
+                    # 的还原守卫会因为序列号不匹配而放弃还原，不冲掉别人的内容。
+                    seq_last = cur
                 break
             time.sleep(0.008)
         if text:
@@ -91,5 +100,12 @@ def get_selected_text(timeout=0.45, retries=2, first_timeout=None):
         if attempt < retries - 1:
             time.sleep(0.06)
 
-    wa.clipboard_restore(snapshot)
+    # v1.5.4 竞态守卫：还原前校验剪贴板序列号。
+    # 快照 -> Ctrl+C -> 还原 期间剪贴板若被外部改动（普通 PrtSc 系统截屏、
+    # 其他程序、用户手动复制），序列号会推进；此时还原的 EmptyClipboard
+    # 会把别人的新内容冲掉、再写回旧快照——症状就是「普通截屏后 Ctrl+V
+    # 粘出来的是上一次 Ctrl+PrtSc 的旧图」。只在序列号仍停留在我们最后一次
+    # 写入的时刻才还原。
+    if wa.get_clipboard_sequence() == seq_last:
+        wa.clipboard_restore(snapshot)
     return normalize_text(text)

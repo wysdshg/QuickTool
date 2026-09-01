@@ -49,7 +49,7 @@ from qt.config import Config
 from qt.translator import Translator
 from qt.ui import MiniButton, PinWindow, Popup, RegionSelector, Settings
 
-APP_VERSION = "1.5.3"
+APP_VERSION = "1.5.4"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN = 1, 2, 3, 4, 5
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
