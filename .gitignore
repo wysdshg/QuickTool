@@ -23,7 +23,5 @@ Desktop.ini
 .idea/
 .vscode/
 
-# 测试临时产物（portable_check 沙箱副本 / 临时取证脚本，非常规源码）
-tests/_portable_sandbox/
-tests/_diag_events_tmp.py
-tests/_proc_check_tmp.py
+# 测试目录整体不入库（测试脚本仅本地开发用，非运行 exe 必需；如需重新入库可移除本行）
+tests/
