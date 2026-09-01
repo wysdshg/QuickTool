@@ -102,7 +102,7 @@ GitHub 上「选中文本 + 快捷键 + 悬浮窗翻译」方向的成熟项目�
 ```
 QuickTool/
 ├── main.py                  # 入口：线程模型、热键路由、事件分发
-├── build.spec               # PyInstaller 打包配置
+├── QuickTool.spec               # PyInstaller 打包配置
 ├── build.bat / run.bat      # 一键打包 / 源码运行
 ├── requirements.txt         # 运行时依赖：无
 ├── assets/icon.ico          # 程序图标
@@ -511,12 +511,12 @@ py -3.12 -m pip install pyinstaller
 
 :: 3. 打包（等价于双击 build.bat）
 cd QuickTool
-py -3.12 -m PyInstaller build.spec --noconfirm --clean
+py -3.12 -m PyInstaller QuickTool.spec --noconfirm --clean
 
 :: 4. 产物：dist\QuickTool.exe（单文件、无控制台窗口、含图标）
 ```
 
-`build.spec` 关键配置：
+`QuickTool.spec` 关键配置：
 
 ```python
 EXE(..., console=False,          # windowed，不弹黑框
