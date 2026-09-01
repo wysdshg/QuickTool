@@ -1,0 +1,29 @@
+# 构建产物
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec.bak
+
+# 用户配置（含本机热键/引擎选择，不入库）
+config.json
+
+# 运行日志（含本机路径/环境信息，且持续变化）
+logs/
+*.log
+
+# 虚拟环境
+.venv/
+
+# 系统与编辑器垃圾文件
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.idea/
+.vscode/
+
+# 测试临时产物（portable_check 沙箱副本 / 临时取证脚本，非常规源码）
+tests/_portable_sandbox/
+tests/_diag_events_tmp.py
+tests/_proc_check_tmp.py

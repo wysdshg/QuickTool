@@ -1,0 +1,14 @@
+# QuickTrans 运行时依赖：无。
+#
+# 全部功能基于 Python 标准库实现（tkinter / ctypes / urllib / json / winreg /
+# threading / queue），不引入 requests、pyperclip、keyboard、pynput、pywin32、
+# pystray 等任何第三方包。这样打包后的 exe 只有 11 MB 左右，且不需要联网装依赖。
+#
+# 只有「打包」这一个环节需要 PyInstaller（开发机装一次即可，不进最终产物）：
+#
+#     py -3.12 -m pip install pyinstaller
+#     py -3.12 -m PyInstaller build.spec --noconfirm --clean
+#
+# 可选：想再压缩 30%~40% 体积，装 UPX 后把 build.spec 里的 upx=False 改成 True。
+# 可选：生成图标用到 Pillow（只需执行一次，不进最终产物）
+#     py -3.12 -m pip install pillow
