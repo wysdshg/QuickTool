@@ -1,6 +1,6 @@
-# QuickTrans · 极简 Windows 划词翻译工具
+# QuickTool · 极简 Windows 效率工具集
 
-选中任意英文 → 按 `Ctrl+Q` 或点一下「译」迷你按钮 → 光标旁弹出翻译。**零第三方依赖**，单文件 exe 仅 **11.1 MB**，常驻内存 **~12 MB**，冷启动 **~1.3 秒**，绿色免安装。
+划词翻译 / 截图 OCR / 截图对照 / 置顶便签，一个常驻托盘的小工具箱。**零第三方依赖**，单文件 exe 约 **11 MB**，常驻内存 **~12 MB**，冷启动 **~1.3 秒**，绿色免安装。
 
 | 快捷键 / 操作 | 功能 |
 |---|---|
@@ -12,7 +12,7 @@
 | `Ctrl+Alt+Q` | 退出程序（被占用自动顺延） |
 | `Esc` / 点击别处 / 再按一次热键 | 关闭悬浮窗 |
 
-> 本仓库交付：**可运行的 `dist/QuickTrans.exe` + 完整源码 + 本文档**。
+> 本仓库交付：**可运行的 `dist/QuickTool.exe` + 完整源码 + 本文档**。
 > 源码全部由 Python 标准库实现（tkinter / ctypes / urllib / winreg），不需要 `requests`、`pyperclip`、`keyboard`、`pywin32` 等任何第三方包。
 >
 > GitHub：https://github.com/wysdshg/QuickTool
@@ -99,7 +99,7 @@ GitHub 上「选中文本 + 快捷键 + 悬浮窗翻译」方向的成熟项目�
 ## 三、项目结构
 
 ```
-QuickTrans/
+QuickTool/
 ├── main.py                  # 入口：线程模型、热键路由、事件分发
 ├── build.spec               # PyInstaller 打包配置
 ├── build.bat / run.bat      # 一键打包 / 源码运行
@@ -235,7 +235,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 
 **多窗口并存（v1.5.1）**：可同时打开最多 **5 个** 对照小窗，各自独立关闭。层级策略为「**点谁谁在前**」——点击任意窗口即 `lift + focus` 置前（无边框窗点击不自动抢焦点，需显式处理）。新窗口初始位置相对鼠标**级联偏移**（28px × 序号，向右下错开），避免新窗弹出直接盖住旧窗；工具条标题带编号（`对照 1`、`对照 2`…）。超过 5 个时提示"请先关闭一个"。
 
-**保存 + 剪贴板（v1.5.2）**：与 Win+Shift+S 同一逻辑——**框选完成截图自动进剪贴板**（CF_DIB 位图，任何应用直接 Ctrl+V 粘贴）；文件保存则**主动触发**（工具条「存 PNG」按钮 / 快捷键 Ctrl+S），存 1:1 原始分辨率 PNG 到 `%USERPROFILE%\Pictures\QuickTrans\`，命名 `QuickTrans_时间戳.png`，保存成功 toast 提示路径。剪贴板"总是放"（零副作用）、文件"按需存"（不堆积）——这就是"怎么确定是否保存"的答案：**剪贴板无需确认，文件需明确意图**。
+**保存 + 剪贴板（v1.5.2）**：与 Win+Shift+S 同一逻辑——**框选完成截图自动进剪贴板**（CF_DIB 位图，任何应用直接 Ctrl+V 粘贴）；文件保存则**主动触发**（工具条「存 PNG」按钮 / 快捷键 Ctrl+S），存 1:1 原始分辨率 PNG 到 `%USERPROFILE%\Pictures\QuickTool\`，命名 `QuickTool_时间戳.png`，保存成功 toast 提示路径。剪贴板"总是放"（零副作用）、文件"按需存"（不堆积）——这就是"怎么确定是否保存"的答案：**剪贴板无需确认，文件需明确意图**。
 
 | 环节 | 实现 | 为什么 |
 |---|---|---|
@@ -244,7 +244,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 | 显示 | `qt/ui.py` 新增 `PinWindow`：置顶无边框 Toplevel + 工具条 + Canvas | 整窗可拖动；滚轮缩放 1x~1/8x（只缩小不放大，对照真实尺寸最实用）；顶部工具条显示当前缩放百分比 |
 | 多窗口 | `app.pin_wins` 列表管理；`PinWindow` 带 `index` 序号 + `CASCADE=28` 级联偏移；点击 `lift()+focus_force()` 置前；`close()` 从列表移除自己 | 并存不互相顶掉；「点谁谁在前」层级；上限 `PIN_MAX=5` 防失控 |
 | 剪贴板 | `set_clipboard_image`：BMP 去 14B 文件头 → **CF_DIB**（HGLOBAL，走 `_CLIP_LOCK` 串行）→ `SetClipboardData` | 与 Win+Shift+S 同格式，微信/QQ/Word 直接粘贴；CF_DIB 是内存块，快照/还原兼容（不在非 HGLOBAL 黑名单） |
-| 保存 | `_save_png`：复用 `_bmp_to_png` → 写 `Pictures\QuickTrans\`；工具条按钮 + Ctrl+S 触发 | 存 1:1 原图；主动按键 = 明确保存意图；toast 非阻塞提示（不卡主线程） |
+| 保存 | `_save_png`：复用 `_bmp_to_png` → 写 `Pictures\QuickTool\`；工具条按钮 + Ctrl+S 触发 | 存 1:1 原图；主动按键 = 明确保存意图；toast 非阻塞提示（不卡主线程） |
 | BMP→图像 | **标准库 zlib 手写 PNG 编码**（8bit RGB，IDAT 压缩）→ base64 → `tk.PhotoImage` | `tk.PhotoImage` 不认 BMP（只认 GIF/PPM/PNG），PIL 又违反零依赖铁律；PNG 压缩后 base64 体积远小于裸 BMP，且 Tk 8.6 原生支持 |
 
 > ⚠️ 关键设计：`PinWindow` 打开期间 `_handle_drag_end` 也会忽略拖选（同 `ocr_selector` 守卫）——不然在对照窗里拖一下就会弹迷你按钮。版本号顺延至 1.5.0（单窗）、1.5.1（多窗）、1.5.2（保存+剪贴板）。
@@ -280,9 +280,9 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 
 ### 4.10 换电脑 / 绿色分发
 
-**结论：直接复制 `dist\QuickTrans.exe` 到其他电脑就能用。** 它是 PyInstaller `--onefile --windowed` 单文件产物：不写注册表、不需要安装、不需要目标机装 Python 或运行库（Win10/11 自带 UCRT）。
+**结论：直接复制 `dist\QuickTool.exe` 到其他电脑就能用。** 它是 PyInstaller `--onefile --windowed` 单文件产物：不写注册表、不需要安装、不需要目标机装 Python 或运行库（Win10/11 自带 UCRT）。
 
-实测（`tests/portable_check.py`）：把 exe 单独复制到空目录（无 `qt/`、无 `data/`），并伪造一个空白 `APPDATA` 模拟"新电脑首次运行"，跑完整自检流程 —— **退出码 0、8 个关键事件齐全、配置正确落到 `%APPDATA%\QuickTrans\config.json`**，`PORTABLE PASS`。
+实测（`tests/portable_check.py`）：把 exe 单独复制到空目录（无 `qt/`、无 `data/`），并伪造一个空白 `APPDATA` 模拟"新电脑首次运行"，跑完整自检流程 —— **退出码 0、8 个关键事件齐全、配置正确落到 `%APPDATA%\QuickTool\config.json`**，`PORTABLE PASS`。
 
 | 依赖 | 是否随 exe 走 | 说明 |
 |---|---|---|
@@ -295,7 +295,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 换机后需要注意的 5 件事：
 
 1. **热键可能被自动顺延**（这是特性不是 bug）。新电脑上如果 `Ctrl+Q` 被微信/输入法/浏览器扩展占用，程序会自动换用候选组合并弹一条非阻塞提示，同时把结果写进配置（下次启动不再重新报）。实测在本机已有实例占用的环境下，四个默认组合全部命中 1409，程序自动落位为 `Ctrl+Alt+F1` / `Ctrl+Alt+,` / `Ctrl+Alt+Shift+Q` / `Ctrl+Alt+P`，功能全部可用；托盘菜单里也能手动改。**不要同时开两个实例**——它们会互相抢热键（本机实测 2 个实例并存时后启动的那个四个键全被顺延）。
-2. **设置是否随身带**：程序同目录有 `config.json` 就走绿色便携模式（放 U 盘最合适）；没有则读写 `%APPDATA%\QuickTrans\config.json`。想把引擎/API Key/热键一起搬到新电脑，把 `config.json` 和 exe 放同一个文件夹复制过去即可。
+2. **设置是否随身带**：程序同目录有 `config.json` 就走绿色便携模式（放 U 盘最合适）；没有则读写 `%APPDATA%\QuickTool\config.json`。想把引擎/API Key/热键一起搬到新电脑，把 `config.json` 和 exe 放同一个文件夹复制过去即可。
 3. **截图翻译需要系统 OCR 语言包**：设置 → 时间和语言 → 语言 → 首选语言 → 选项 → 下载"文本识别"。新电脑没装 `en-US` 时，截图翻译会给出安装引导，**划词翻译完全不受影响**。
 4. **联网与 Key**：默认 MyMemory 需联网（免 Key）；离线词库断网可用（单词级）；DeepL / 大模型引擎需要在新电脑上能访问对应 API 且配置里有 Key。
 5. **首次运行的拦截提示**：exe 未签名，新电脑上可能遇到 SmartScreen（点"更多信息 → 仍要运行"）；个别杀软会误报 PyInstaller 单文件产物，加白名单即可。另外开机自启是写 `HKCU\...\Run` 里的**绝对路径**，换了目录或电脑后需要在设置里重新勾选一次。
@@ -316,7 +316,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 - 新增 `TaskbarCreated` 监听：explorer 重启会收走所有托盘图标，现在收到广播会自动重新挂图标。
 
 **2) 运行日志系统（`qt/logging_setup.py`，用户要求的取证基建）**：
-- 日志位置跟随配置的便携逻辑：`<exe 同目录>\logs\QuickTrans.log`（便携）或 `%APPDATA%\QuickTrans\logs\`（安装模式），2MB 轮转保留 3 份；
+- 日志位置跟随配置的便携逻辑：`<exe 同目录>\logs\QuickTool.log`（便携）或 `%APPDATA%\QuickTool\logs\`（安装模式），2MB 轮转保留 3 份；
 - **三层崩溃取证**：`faulthandler`（C 层访问违例时 dump 各线程 Python 栈到 `crash.log`）+ 三处异常钩子（`sys.excepthook` / `threading.excepthook` / `Tk.report_callback_exception`——windowed exe 没有 stderr，Tk 回调异常默认是黑洞，现在全部落盘）+ 关键事件埋点（启动/热键注册/托盘/抓词/翻译/OCR/退出，含线程名）；
 - **5 分钟心跳**：`HEARTBEAT threads=[...]`，区分"进程活着但空闲"与"假死"；
 - 日志系统自身任何异常都被吞掉，绝不影响主程序。
@@ -325,7 +325,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 **验证**：smoke 40/40（新增日志 8 项断言，含 sys.excepthook 三参签名防回归）、e2e 10/10×2（源码 + 打包版）、harden_check 14/14（v1.4.1 起含并发剪贴板压力场景）、taskbar_rebuild_check 5/5、lag_workers 白盒回归 PASS。日志实测样例见下——崩溃后再看最后一条就知道死前在做什么：
 
 ```text
-2026-08-31 19:53:15.379 [INFO] [MainThread] BOOT QuickTrans v1.4 pid=36060
+2026-08-31 19:53:15.379 [INFO] [MainThread] BOOT QuickTool v1.4 pid=36060
 2026-08-31 19:53:15.424 [INFO] [Win32Thread] HWND-CREATED hwnd=3476256
 2026-08-31 19:53:15.434 [INFO] [Win32Thread] TRAY-ADD ok=True
 2026-08-31 19:53:15.434 [INFO] [Win32Thread] HOTKEY-OK hid=1 combo=Ctrl+Q
@@ -334,7 +334,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 2026-08-31 19:53:22.244 [INFO] [MainThread] QUIT-START
 ```
 
-**如果以后再出现**：直接把 `logs\QuickTrans.log`（和 `logs\crash.log`）发给开发者即可——即使还是堆损坏崩溃，faulthandler 的线程栈 + 最后一条事件能大幅缩小嫌疑范围。
+**如果以后再出现**：直接把 `logs\QuickTool.log`（和 `logs\crash.log`）发给开发者即可——即使还是堆损坏崩溃，faulthandler 的线程栈 + 最后一条事件能大幅缩小嫌疑范围。
 
 **v1.4.1 实证：日志系统成功抓到崩溃栈并定位真凶（2026-08-31）**。v1.4 上线约 30 分钟后实例再次静默退出（无 QUIT 日志），`crash.log` 这次抓到 faulthandler 栈：
 
@@ -354,12 +354,12 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 
 **v1.5.1 多窗口并存**（2026-08-31）：`app.pin_win` → `app.pin_wins` 列表，最多 **5 个** 对照窗并存，各自独立关闭；「点谁谁在前」点击置前（无边框窗需显式 `lift()+focus_force()`）；新窗口初始位置级联偏移 28px×序号；超过上限提示"请先关闭一个"。验证：smoke 55/55（新增多窗口并存 / 级联偏移位置不同 / 关闭一个不影响另一个 / 全部关闭列表清空 4 项）、e2e 10/10×2（`PIN_SHOWN` 带 total 计数）、`tests/pin_full_app.py` 真 App 驱动 `FULL_APP_PIN PASS`（两次框选并存 total=2 + 级联偏移 + 清空）。
 
-**v1.5.2 截图进剪贴板 + 保存**（2026-08-31）：与 Win+Shift+S 同逻辑——框选完成自动进剪贴板（`set_clipboard_image`：BMP 去 14B 文件头 → CF_DIB，走 `_CLIP_LOCK` 串行；失败不阻塞，小窗照常）；「存 PNG」按钮 / Ctrl+S 主动保存 1:1 原图到 `%USERPROFILE%\Pictures\QuickTrans\`（时间戳命名，toast 提示路径）。验证：smoke 63/63（新增 CF_DIB 放图/快照兼容/还原文本 + 存 PNG 路径/魔数/尺寸/toast 8 项）、e2e 11/11×2（新增 `PIN_CLIP=True` 探针断言）、`pin_full_app.py` 真 App 驱动 `FULL_APP_PIN PASS`（框选后 `CLIP_DIB=True`）。
+**v1.5.2 截图进剪贴板 + 保存**（2026-08-31）：与 Win+Shift+S 同逻辑——框选完成自动进剪贴板（`set_clipboard_image`：BMP 去 14B 文件头 → CF_DIB，走 `_CLIP_LOCK` 串行；失败不阻塞，小窗照常）；「存 PNG」按钮 / Ctrl+S 主动保存 1:1 原图到 `%USERPROFILE%\Pictures\QuickTool\`（时间戳命名，toast 提示路径）。验证：smoke 63/63（新增 CF_DIB 放图/快照兼容/还原文本 + 存 PNG 路径/魔数/尺寸/toast 8 项）、e2e 11/11×2（新增 `PIN_CLIP=True` 探针断言）、`pin_full_app.py` 真 App 驱动 `FULL_APP_PIN PASS`（框选后 `CLIP_DIB=True`）。
 
 **v1.5.3 截图框选两个 bug 修复**（2026-09-01）：
 - **孤儿 release 自动截屏**：`RegionSelector` 只在 `ButtonPress-1` 才设 `_sx/_sy`，`_release` 不检查是否真按下过——遮罩弹出瞬间鼠标残留按下状态（无 press 配对）松手会带 `_sx/_sy=0`，从屏幕左上角 (0,0) 到鼠标位置生成巨大"随机"选区直接截屏（日志实证：1124x110 / 968x134 两个左上角矩形，用户没动鼠标却完成截图）。修复：加 `_pressed` 标志，孤儿 release 直接忽略。
 - **选区完成瞬间钩子误判拖拽为划词**：框选 LEFTUP 后 `close()` 先把 `ocr_selector` 置 None、`pin_wins` 尚未 append，钩子的 `WM_APP_DRAG_END` 到达时守卫双双放行 → `get_selected_text` 快照/还原剪贴板，把刚写入的 CF_DIB 覆盖成旧内容（用户截图后 Ctrl+V 粘到旧文本）。修复：加 `App._selecting` 选区流程标志（`open_pin`/`open_ocr` 置位，完成回调 `finally` 清除，取消路径 `close()` 清除），`_handle_drag_end` 第一道守卫拦住。
-- 验证：smoke **68/68**（新增孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消 / 选区流程中钩子不抢拖拽 / 结束后正常抓词 5 项）、e2e 11/11×2、`pin_full_app.py` `FULL_APP_PIN PASS`×2（CLIP_DIB 稳定 0.0s）。**注意**：跑真 App 驱动测试前须确认没有旧 QuickTrans 实例在后台（其 WH_MOUSE_LL 钩子会把注入的拖拽当划词、快照还原剪贴板，导致 CF_DIB 探针误报）——`tasklist | findstr QuickTrans` 先杀干净。
+- 验证：smoke **68/68**（新增孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消 / 选区流程中钩子不抢拖拽 / 结束后正常抓词 5 项）、e2e 11/11×2、`pin_full_app.py` `FULL_APP_PIN PASS`×2（CLIP_DIB 稳定 0.0s）。**注意**：跑真 App 驱动测试前须确认没有旧 QuickTool 实例在后台（其 WH_MOUSE_LL 钩子会把注入的拖拽当划词、快照还原剪贴板，导致 CF_DIB 探针误报）——`tasklist | findstr QuickTool` 先杀干净。
 
 **v1.5.4 抓词还原竞态修复——普通 PrtSc 截屏不再被旧图覆盖**（2026-09-01）：
 - **症状**：先 `Ctrl+Prtsc` 截图对照（CF_DIB 进剪贴板），再按普通 PrtSc 系统截屏，Win+V / 直接 Ctrl+V 粘出来的是**上一次 Ctrl+Prtsc 的旧图**，退出软件后正常。
@@ -367,7 +367,7 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **修复**：还原前校验剪贴板序列号——`seq` 变了但读不到文本（截屏是 CF_DIB 位图）＝外部写入，`seq_last` 保持初始值，还原守卫因序列号不匹配**放弃还原**；只有真正读到文本（我们的 Ctrl+C 复制生效）才更新 `seq_last` 并放行还原。
 - 验证：smoke **70/70**（新增「抓词期间外部截屏写入不被旧快照冲掉」+「无外部写入时还原仍正常」2 项）、e2e 11/11×2。
 
-**如果以后再出现**：取 `logs\QuickTrans.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
+**如果以后再出现**：取 `logs\QuickTool.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
 
 ---
 
@@ -438,7 +438,7 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 配置文件位置（二选一，**程序同目录的 config.json 优先**，绿色便携）：
 
 - 绿色便携模式：`config.json`（exe 同目录）
-- 默认：`%APPDATA%\QuickTrans\config.json`
+- 默认：`%APPDATA%\QuickTool\config.json`
 
 ```jsonc
 {
@@ -478,10 +478,10 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 py -3.12 -m pip install pyinstaller
 
 :: 3. 打包（等价于双击 build.bat）
-cd QuickTrans
+cd QuickTool
 py -3.12 -m PyInstaller build.spec --noconfirm --clean
 
-:: 4. 产物：dist\QuickTrans.exe（单文件、无控制台窗口、含图标）
+:: 4. 产物：dist\QuickTool.exe（单文件、无控制台窗口、含图标）
 ```
 
 `build.spec` 关键配置：
@@ -564,11 +564,11 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 | `tests/e2e.py` | 真起进程，`SendInput` 真实按键触发 → 弹窗 → 托盘消息模拟打开设置（**断言窗口 state=normal 且已映射**，防 withdrawn 不可见回归）→ 迷你按钮翻译链路 → 截图对照小窗 + **剪贴板 CF_DIB 探针（v1.5.2）** → **OCR 桥语言包探针** → 干净退出 | 11/11 ✅（源码版 + 打包版双跑） |
 | `tests/perf.py` | 体积 / 冷启动 / 常驻内存 / 热键退出（退出热键从配置读取，兼容顺延后的值） | 见 7.3 |
 | `tests/tray_menu_full_app.py` | 诊断脚本：真 App 全链路——模拟托盘右键 → `TrackPopupMenu` 菜单弹出 → 键盘选中「设置」→ 设置窗口可见（Win32 外部确认，不跨线程调 Tk） | ✅ 手动运行 |
-| `tests/drag_lag.py` | **鼠标卡顿量化**：建无文本探针窗口 + 20ms 节奏注入鼠标移动，统计 WM_MOUSEMOVE 到达间隔；先测基线再做一次"拖空选"，比对尖峰。修复前基线 22ms / 拖选后 **467ms**（需干净环境，其他 QuickTrans 实例的钩子会干扰） | 手动运行 |
+| `tests/drag_lag.py` | **鼠标卡顿量化**：建无文本探针窗口 + 20ms 节奏注入鼠标移动，统计 WM_MOUSEMOVE 到达间隔；先测基线再做一次"拖空选"，比对尖峰。修复前基线 22ms / 拖选后 **467ms**（需干净环境，其他 QuickTool 实例的钩子会干扰） | 手动运行 |
 | `tests/lag_workers.py` | **钩子线程阻塞回归**（只针对本进程实例，不受其他实例干扰）：把抓词替换成 `sleep(0.8s)` 制造最坏情况，用跨线程 `SendMessage` 测 Win32 线程往返延迟。修复后 `CaptureWorker` + 0ms；加 `--baseline` 可跑"修复前"对照（800ms） | ✅ |
 | `tests/portable_check.py` | **绿色便携性**：把 exe 单独复制到空目录（无 `qt/`、`data/`）+ 伪造空白 APPDATA 模拟新电脑首次运行 → 断言 selftest 8 个关键事件齐全、退出码 0、配置正确落到 `%APPDATA%`。实测 `PORTABLE PASS` | ✅ |
-| `tests/ocr_full_app.py` | 诊断脚本：**截图翻译真 App 全链路**——纯 Win32 大字窗口渲染已知文字 → 队列触发 `ocr_select` → `SendInput` 真实拖拽框选 → GDI 抓屏 → PowerShell OCR → 进入翻译管线弹窗；同时断言框选期间迷你按钮不弹出（`ocr_selector` 守卫）。实测 OCR 精确读出 `quicktrans ocr full app test` | ✅ 手动运行 |
-| `tests/pin_full_app.py` | 诊断脚本：**截图对照真 App 全链路（v1.5）**——队列触发 `pin_select` → 遮罩弹出 → `SendInput` 真实拖拽框选 → GDI 抓屏 → PinWindow 置顶小窗创建（断言 topmost + 缩放倍数合法）；**v1.5.1 多窗口**：第二次框选并存 total=2 + 级联偏移位置不同 → 第 3~5 个继续创建 → **第 6 个被 PIN_MAX 上限拦截** → `pin_close` 后列表清空；**v1.5.2**：框选后断言剪贴板出现 CF_DIB（`clipboard_has_dib`）；同时断言框选期间迷你按钮不弹出（`ocr_selector` 守卫）。**v1.5.3 注意：跑前先杀干净后台旧 QuickTrans 实例**（其钩子会干扰 CF_DIB 探针）。实测 `FULL_APP_PIN PASS` | ✅ 手动运行 |
+| `tests/ocr_full_app.py` | 诊断脚本：**截图翻译真 App 全链路**——纯 Win32 大字窗口渲染已知文字 → 队列触发 `ocr_select` → `SendInput` 真实拖拽框选 → GDI 抓屏 → PowerShell OCR → 进入翻译管线弹窗；同时断言框选期间迷你按钮不弹出（`ocr_selector` 守卫）。实测 OCR 精确读出 `quicktool ocr full app test` | ✅ 手动运行 |
+| `tests/pin_full_app.py` | 诊断脚本：**截图对照真 App 全链路（v1.5）**——队列触发 `pin_select` → 遮罩弹出 → `SendInput` 真实拖拽框选 → GDI 抓屏 → PinWindow 置顶小窗创建（断言 topmost + 缩放倍数合法）；**v1.5.1 多窗口**：第二次框选并存 total=2 + 级联偏移位置不同 → 第 3~5 个继续创建 → **第 6 个被 PIN_MAX 上限拦截** → `pin_close` 后列表清空；**v1.5.2**：框选后断言剪贴板出现 CF_DIB（`clipboard_has_dib`）；同时断言框选期间迷你按钮不弹出（`ocr_selector` 守卫）。**v1.5.3 注意：跑前先杀干净后台旧 QuickTool 实例**（其钩子会干扰 CF_DIB 探针）。实测 `FULL_APP_PIN PASS` | ✅ 手动运行 |
 
 > **自动化验证了托盘修复**：selftest 直接给隐藏窗口发 `WM_APP_TRAY` 消息（lParam 高 16 位 = 图标 ID、低 16 位 = `WM_LBUTTONDBLCLK`），断言设置窗口成功打开——该用例在修复前恒为 False。
 >
@@ -588,4 +588,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTrans v1.5.4 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTool v1.6.0 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*

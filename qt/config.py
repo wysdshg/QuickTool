@@ -2,7 +2,7 @@
 
 存储策略：
   优先读取「程序同目录/config.json」（绿色便携模式，可放 U 盘）；
-  不存在则写入 %APPDATA%\\QuickTrans\\config.json。
+  不存在则写入 %APPDATA%\\QuickTool\\config.json。
 """
 import json
 import os
@@ -11,7 +11,7 @@ import threading
 import winreg
 from collections import OrderedDict
 
-APP_NAME = "QuickTrans"
+APP_NAME = "QuickTool"
 
 DEFAULTS = {
     # ---------------- 快捷键 ----------------

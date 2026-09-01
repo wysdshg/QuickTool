@@ -1,7 +1,7 @@
 """截图 OCR：调用 Windows 10/11 内置的 Windows.Media.Ocr（WinRT）。
 
 为什么走 PowerShell 而不是 pip 装 winrt / PaddleOCR / Tesseract：
-  - QuickTrans 铁律是零第三方运行时依赖（打包 exe 要小、不碰杀软红线）；
+  - QuickTool 铁律是零第三方运行时依赖（打包 exe 要小、不碰杀软红线）；
   - Windows.Media.Ocr 是系统自带能力，完全离线、无 API Key，识别质量
     对"屏幕清晰文字"场景完全够用（STranslate 等也把它作为引擎之一）；
   - PowerShell 5.1 可通过 WinRT 投射直接调用（PS7 反而不行），社区已有
@@ -23,7 +23,7 @@ import tempfile
 _POWERSHELL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                            "System32", "windowspowershell", "v1.0",
                            "powershell.exe")
-_SCRIPT_PATH = os.path.join(tempfile.gettempdir(), "QuickTrans_ocr.ps1")
+_SCRIPT_PATH = os.path.join(tempfile.gettempdir(), "QuickTool_ocr.ps1")
 _CREATE_NO_WINDOW = 0x08000000          # windowed exe 下别闪黑框
 
 # WinRT 异步操作在 PS5.1 里没有原生 await，用反射拿 GetAwaiter 兜住（社区标准做法）

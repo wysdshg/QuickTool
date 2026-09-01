@@ -520,7 +520,7 @@ class PinWindow:
         try:
             d = dir or pin_save_dir()
             os.makedirs(d, exist_ok=True)
-            name = time.strftime("QuickTrans_%Y%m%d_%H%M%S.png")
+            name = time.strftime("QuickTool_%Y%m%d_%H%M%S.png")
             path = os.path.join(d, name)
             with open(path, "wb") as f:
                 f.write(_bmp_to_png(self._bmp))
@@ -665,9 +665,9 @@ def _bmp_to_photo(data):
 
 
 def pin_save_dir():
-    """截图文件默认保存目录：%USERPROFILE%\Pictures\QuickTrans\（同系统截屏惯例）。"""
+    """截图文件默认保存目录：%USERPROFILE%\Pictures\QuickTool\（同系统截屏惯例）。"""
     base = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    return os.path.join(base, "Pictures", "QuickTrans")
+    return os.path.join(base, "Pictures", "QuickTool")
 
 
 # ================================================================== 设置
@@ -681,7 +681,7 @@ class Settings(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.cfg = app.cfg
-        self.title("QuickTrans 设置")
+        self.title("QuickTool 设置")
         self.geometry("560x620")
         self.resizable(True, True)
         self.configure(bg="#f5f7fa")
@@ -911,7 +911,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTrans v1.5.3 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.0 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 

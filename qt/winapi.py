@@ -625,7 +625,7 @@ def get_clipboard_sequence():
 _PROCS = {}      # 防止 WNDPROC 回调被 GC
 
 
-def create_hidden_window(on_message, class_name="QuickTransHiddenWindow"):
+def create_hidden_window(on_message, class_name="QuickToolHiddenWindow"):
     """创建一个不可见窗口承载热键消息与托盘回调。"""
     hinstance = kernel32.GetModuleHandleW(None)
 
@@ -658,7 +658,7 @@ def create_hidden_window(on_message, class_name="QuickTransHiddenWindow"):
         if err not in (1410,):        # ERROR_CLASS_ALREADY_EXISTS
             raise OSError(f"RegisterClassExW 失败，错误码 {err}")
 
-    hwnd = user32.CreateWindowExW(0, class_name, "QuickTrans", WS_OVERLAPPED,
+    hwnd = user32.CreateWindowExW(0, class_name, "QuickTool", WS_OVERLAPPED,
                                   0, 0, 0, 0, None, None, hinstance, None)
     if not hwnd:
         raise OSError(f"CreateWindowExW 失败，错误码 {ctypes.get_last_error()}")
@@ -803,7 +803,7 @@ class MouseDragWatcher:
 class Tray:
     """极简托盘：图标 + 右键菜单。失败时静默降级，不影响热键功能。"""
 
-    def __init__(self, hwnd, tip="QuickTrans", callback_msg=WM_APP_TRAY):
+    def __init__(self, hwnd, tip="QuickTool", callback_msg=WM_APP_TRAY):
         self.hwnd = hwnd
         self.msg = callback_msg
         self.added = False

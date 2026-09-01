@@ -1,5 +1,6 @@
 """
-QuickTrans —— 极简 Windows 划词翻译工具。
+QuickTool —— 极简 Windows 效率工具集（划词翻译 / 截图 OCR / 截图对照 / 置顶便签）。
+运行时零第三方依赖，底层全部基于 Win32 API。
 
 线程模型（四个线程，靠 queue.Queue 单向通信）：
     主线程          tkinter 事件循环（悬浮窗 / 设置界面）
@@ -49,7 +50,7 @@ from qt.config import Config
 from qt.translator import Translator
 from qt.ui import MiniButton, PinWindow, Popup, RegionSelector, Settings
 
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.6.0"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN = 1, 2, 3, 4, 5
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
@@ -73,7 +74,7 @@ TRAY_SETTINGS, TRAY_QUIT, TRAY_OCR, TRAY_PIN = 1001, 1002, 1003, 1004
 TRAY_ITEMS = [(TRAY_SETTINGS, "设置"), (TRAY_OCR, "截图翻译"),
               (TRAY_PIN, "截图对照"), (0, None), (TRAY_QUIT, "退出")]
 
-E2E_LOG = os.path.join(tempfile.gettempdir(), "QuickTrans_e2e.log")
+E2E_LOG = os.path.join(tempfile.gettempdir(), "QuickTool_e2e.log")
 
 
 def e2e_log(tag):
@@ -118,7 +119,7 @@ class App:
     def run(self):
         ls.setup_logging()                       # 尽早初始化，越早越好
         log = ls.get_logger()
-        log.info("BOOT QuickTrans v%s pid=%s frozen=%s log_dir=%s",
+        log.info("BOOT QuickTool v%s pid=%s frozen=%s log_dir=%s",
                  APP_VERSION, os.getpid(), bool(getattr(sys, "frozen", False)),
                  ls.log_dir())
         e2e_log("BOOT")
@@ -374,7 +375,7 @@ class App:
     def _tray_add(self):
         if self.tray and self.tray.added:
             return
-        self.tray = wa.Tray(self.hwnd, "QuickTrans 划词翻译")
+        self.tray = wa.Tray(self.hwnd, "QuickTool 划词翻译")
         ok = self.tray.add()
         ls.get_logger().info("TRAY-ADD ok=%s", ok)
 
@@ -638,9 +639,9 @@ class App:
         elif kind == "fatal":
             # 不用模态 messagebox——它会卡住主线程，导致队列里的
             # 设置/翻译事件全部积压。改用非阻塞悬浮提示。
-            self._show_popup("", payload, "QuickTrans 提示", True)
+            self._show_popup("", payload, "QuickTool 提示", True)
         elif kind == "info":
-            self._show_popup("", payload, "QuickTrans 提示", True)
+            self._show_popup("", payload, "QuickTool 提示", True)
 
     def _show_popup(self, text, result, engine, ok, loading=False):
         if self.popup and not self.popup.closed:
@@ -698,14 +699,14 @@ class App:
             self.ocr_selector = None
             try:
                 data = wa.grab_screen_bmp(x, y, w, h)
-                path = os.path.join(tempfile.gettempdir(), "QuickTrans_ocr.bmp")
+                path = os.path.join(tempfile.gettempdir(), "QuickTool_ocr.bmp")
                 with open(path, "wb") as f:
                     f.write(data)
                 self._ocr_img = path
             except Exception as exc:
                 self.q.put(("toast", ("截图失败", str(exc))))
                 return
-            self.q.put(("toast", ("QuickTrans 截图", "正在识别文字…")))
+            self.q.put(("toast", ("QuickTool 截图", "正在识别文字…")))
             wa.post_message(self.hwnd, WM_APP_OCR_RUN)
         finally:
             # 同 _pin_region_selected：选区流程结束才放行钩子
@@ -734,7 +735,7 @@ class App:
             if err == "no_lang":
                 hint = ("没有可用的 OCR 语言包。请到 Windows 设置 → 时间和语言 → "
                         "语言 → 首选语言 → 选项，下载「文本识别」语言功能；"
-                        "或在 QuickTrans 设置里指定 OCR 语言。")
+                        "或在 QuickTool 设置里指定 OCR 语言。")
             else:
                 hint = err or "未知错误"
             self.q.put(("toast", ("截图识别失败", hint)))

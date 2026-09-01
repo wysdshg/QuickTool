@@ -7,9 +7,9 @@
     拿不到崩溃前最后一步在干什么。本模块把"崩溃前现场"记到磁盘。
 
 日志位置（跟随配置的便携逻辑，与 config.json 同一侧）：
-    便携模式   <exe 或项目目录>/logs/QuickTrans.log
-    安装模式   %APPDATA%/QuickTrans/logs/QuickTrans.log
-轮转：单文件 2MB，保留 3 个历史（QuickTrans.log.1 ~ .3）。
+    便携模式   <exe 或项目目录>/logs/QuickTool.log
+    安装模式   %APPDATA%/QuickTool/logs/QuickTool.log
+轮转：单文件 2MB，保留 3 个历史（QuickTool.log.1 ~ .3）。
 
 崩溃取证三层：
     1. faulthandler  —— 访问违例（0xC0000005 等）时自动把各线程 Python 栈
@@ -31,7 +31,7 @@ import sys
 import threading
 import traceback
 
-APP_NAME = "QuickTrans"
+APP_NAME = "QuickTool"
 _MAX_BYTES = 2 * 1024 * 1024      # 单文件 2MB
 _BACKUP_COUNT = 3
 
@@ -81,7 +81,7 @@ def setup_logging():
     _logger.propagate = False
     try:
         from logging.handlers import RotatingFileHandler
-        fh = RotatingFileHandler(os.path.join(d, "QuickTrans.log"),
+        fh = RotatingFileHandler(os.path.join(d, "QuickTool.log"),
                                  maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT,
                                  encoding="utf-8")
         fh.setFormatter(logging.Formatter(

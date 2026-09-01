@@ -2,11 +2,11 @@
 """PyInstaller 打包配置（--onefile / --windowed / 零第三方依赖）。
 
 构建：  pyinstaller build.spec --noconfirm --clean
-输出：  dist/QuickTrans.exe
+输出：  dist/QuickTool.exe
 """
 from PyInstaller.utils.hooks import collect_data_files
 
-APP_NAME = "QuickTrans"
+APP_NAME = "QuickTool"
 
 # 用不到的标准库 / 常见大包，剔除以减小体积。
 # 注意：只剔确定没被引用的，乱剔会导致运行期 ModuleNotFoundError。

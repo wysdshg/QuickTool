@@ -1,4 +1,4 @@
-# QuickTrans 运行时依赖：无。
+# QuickTool 运行时依赖：无。
 #
 # 全部功能基于 Python 标准库实现（tkinter / ctypes / urllib / json / winreg /
 # threading / queue），不引入 requests、pyperclip、keyboard、pynput、pywin32、
