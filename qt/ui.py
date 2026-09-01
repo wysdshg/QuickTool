@@ -940,7 +940,7 @@ class Settings(tk.Toplevel):
         self.app = app
         self.cfg = app.cfg
         self.title("QuickTool 设置")
-        self.geometry("560x620")
+        self.geometry("680x620")
         self.resizable(True, True)
         self.configure(bg="#f5f7fa")
         # 注意：不要对隐藏的 root 调 transient()！实测 Tk 会让子窗口继承父窗口
@@ -980,9 +980,12 @@ class Settings(tk.Toplevel):
         sb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
         inner = tk.Frame(canvas, bg="#f5f7fa")
-        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         inner.bind("<Configure>",
                    lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        # 内容宽度跟随窗口：不然 inner 以自然宽度渲染，超宽部分被横向裁掉
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfigure(inner_id, width=e.width))
         canvas.bind_all("<MouseWheel>",
                         lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
@@ -998,14 +1001,20 @@ class Settings(tk.Toplevel):
         return lf
 
     def _row(self, parent, label, widget, hint=""):
+        # widget 的 master 是 parent（LabelFrame），但必须 pack 到行 Frame r 里：
+        # 用 in_=r 指定几何父（Tk 允许 master 是 in_ 目标的父级）。
+        # 之前直接 widget.pack(side="left") pack 到了 LabelFrame —— 行 Frame（top）
+        # 与 widget（left）交错 pack，空洞逐行右移：每行被上一行的 Entry 推右
+        # 一个 Entry 宽度，整个内容区被撑到 ~2000px 宽，热键区只能看到前两行
+        # 且全部错位（用户报"只有划词翻译和截图翻译俩个 + 显示 bug"）。
         r = tk.Frame(parent, bg=parent.cget("bg") if "bg" in parent.keys() else "#f5f7fa")
         r.pack(fill="x", pady=3)
         tk.Label(r, text=label, width=12, anchor="w", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
-        widget.pack(side="left", fill="x", expand=True)
+        widget.pack(in_=r, side="left", fill="x", expand=True)
         if hint:
             tk.Label(r, text=hint, fg="#8a94a6", bg="#f5f7fa",
-                     font=("Microsoft YaHei UI", 8)).pack(side="left", padx=6)
+                     font=("Microsoft YaHei UI", 8)).pack(in_=r, side="left", padx=6)
 
     # ------------------------------------------------------------ 引擎
     def _section_engine(self, root):
@@ -1170,7 +1179,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.0 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.1 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 

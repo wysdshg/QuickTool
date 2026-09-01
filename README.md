@@ -373,6 +373,12 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **置顶便签（新功能）**：见 4.12 节。选中文字 → `Ctrl+Alt+N` → 钉到置顶便签窗，单窗口累积、可直接编辑、支持回搜原处。
 - 验证：smoke **93/93**（新增便签 22 项）、e2e 13/13×2（新增 `NOTE_SHOWN`/`NOTE_TOTAL` 探针）。
 
+**v1.6.1 设置窗口布局错乱修复**（2026-09-01）：
+- **症状**：设置窗口热键区只能看到「划词翻译」「截图翻译」两行且全部错位、右半截断，其余 4 行（截图对照/置顶便签/打开设置/退出程序）不可见。
+- **根因**：`_row()` 里行 Frame `r` 只包住了 Label，而 Entry/Combobox 的 master 是 LabelFrame，pack 时直接 `pack(side="left")` 到了 LabelFrame —— 行（top）与控件（left）**交错 pack**，pack 空洞逐行右移：每行被上一行的 Entry 推右一个 Entry 宽度（~253px），整个内容区自然宽被撑到 ~2000px，超宽部分被 Canvas 裁掉。该 bug 从 v1.5.3 前就埋着，v1.6.0 加第 4 行后愈发明显才被注意到。
+- **修复**：① `widget.pack(in_=r, ...)` 用 Tk 的 `in_` 机制把控件几何挂到行 Frame（master 仍可为 LabelFrame）；② Canvas 加 `itemconfigure(inner_id, width=e.width)` 内容宽度跟随窗口；③ 默认窗口 560→680（「失败回退」行 5 个复选框自然宽 ~620px）。
+- 验证：真实构建 Settings 截屏比对（6 行热键整齐、失败回退行完整）+ smoke **97/97**（新增 6.10 节布局回归：6 个输入框同列 x=150、逐行 y 递增、inner 自然宽 <800）。
+
 **如果以后再出现**：取 `logs\QuickTool.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
 
 ### 4.12 置顶便签（v1.6 新增）
@@ -620,4 +626,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTool v1.6.0 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTool v1.6.1 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*

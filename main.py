@@ -51,7 +51,7 @@ from qt.translator import Translator
 from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
