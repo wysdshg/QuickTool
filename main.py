@@ -51,7 +51,7 @@ from qt.translator import Translator
 from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
@@ -307,9 +307,13 @@ class App:
             self.drag.stop()
 
     # ---- 迷你按钮：拖选文字结束后自动抓词并请求显示按钮 ----
-    def _on_drag_end(self, x, y):
-        """钩子回调（轻量，仅记录坐标）由消息循环处理，避免在钩子内做重活。"""
-        self._drag_pt = (x, y)
+    def _on_drag_end(self, x0, y0, x1, y1):
+        """钩子回调（轻量，仅记录坐标）由消息循环处理，避免在钩子内做重活。
+
+        带 (按下点, 弹起点)：按下点决定『这次拖选发生在哪类窗口』——截图遮罩
+        框选、控制台 QuickEdit 拖选都不该自动抓词；弹起点是迷你按钮落点。
+        """
+        self._drag_box = (x0, y0, x1, y1)
         wa.post_message(self.hwnd, wa.WM_APP_DRAG_END)
 
     def _handle_drag_end(self):
@@ -331,13 +335,21 @@ class App:
             return
         if self.mini_btn and not self.mini_btn.closed:
             return
-        x, y = getattr(self, "_drag_pt", (0, 0))
+        x0, y0, x1, y1 = getattr(self, "_drag_box", (0, 0, 0, 0))
+        # 按下点所在窗口不能安全自动抓词的场景（v1.6.6）：
+        #   console  —— 控制台里 Ctrl+C 无选区=中断信号，拖选会被当划词误发；
+        #   overlay  —— 系统/第三方截图工具遮罩里拖动框选，也会被误判成划词，
+        #               松手后盲发 Ctrl+C 砸到随后的 cmd 上造成中断/多行。
+        reason = wa.is_drag_blocked_at(x0, y0)
+        if reason:
+            ls.get_logger().info("DRAG-SKIP reason=%s down=(%s,%s)", reason, x0, y0)
+            return
         # 此刻前台仍是用户正在读的那个窗口（刚松开鼠标），记下标题当来源。
         # 与热键 Ctrl+Alt+N 路径一致。放在消息循环线程而非钩子回调里。
         hwnd = wa.get_foreground_window()
         if hwnd:
             self._last_source = wa.get_window_title(hwnd)
-        self._request_capture("drag", (x, y))
+        self._request_capture("drag", (x1, y1))
 
     # ============================================================ 后台 worker
     # 为什么需要这两个 worker：

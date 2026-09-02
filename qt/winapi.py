@@ -241,6 +241,20 @@ user32.keybd_event.argtypes = [ctypes.c_ubyte, ctypes.c_ubyte,
                                ctypes.c_uint32, ctypes.c_size_t]
 user32.SetForegroundWindow.argtypes = [HANDLE]
 user32.SetForegroundWindow.restype = wt.BOOL
+user32.GetClassNameW.argtypes = [HANDLE, LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+user32.WindowFromPoint.argtypes = [POINT]
+user32.WindowFromPoint.restype = HANDLE
+user32.IsWindowVisible.argtypes = [HANDLE]
+user32.IsWindowVisible.restype = wt.BOOL
+user32.GetWindowThreadProcessId.argtypes = [HANDLE, ctypes.POINTER(wt.DWORD)]
+user32.GetWindowThreadProcessId.restype = wt.DWORD
+kernel32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+kernel32.OpenProcess.restype = HANDLE
+kernel32.CloseHandle.argtypes = [HANDLE]
+kernel32.QueryFullProcessImageNameW.argtypes = [HANDLE, wt.DWORD, LPWSTR,
+                                                ctypes.POINTER(wt.DWORD)]
+kernel32.QueryFullProcessImageNameW.restype = wt.BOOL
 
 # 任务栏重建广播：explorer 重启后所有托盘图标都会被系统收走，托盘程序必须
 # 监听这个广播消息并重新 Shell_NotifyIconW，否则"程序活着但托盘图标没了"。
@@ -397,6 +411,109 @@ def get_window_title(hwnd):
         return ""
 
 
+# ---------------------------------------------------------------- 窗口类型识别
+# 控制台/终端窗口对 Ctrl+C 语义敏感：有活动选区→复制；无选区→把 Ctrl+C 当
+# 『中断信号』发给前台程序组（正在跑的程序会被杀、shell 会换行）。QuickTool
+# 的抓词全靠模拟 Ctrl+C，所以在这些窗口里绝不能盲发。
+_CONSOLE_CLASSES = (
+    "ConsoleWindowClass",             # conhost：cmd / PowerShell 的传统宿主
+    "CASCADIA_HOSTING_WINDOW_CLASS",  # Windows Terminal（1.18+ 主窗口）
+    "TerminalWindowClass",            # Windows Terminal（部分版本/旧版）
+    "mintty",                         # Git Bash 默认终端
+)
+_CONSOLE_PROCESSES = (
+    "conhost.exe", "openconsole.exe", "windowsterminal.exe", "mintty.exe",
+)
+_WS_EX_TOPMOST = 0x00000008
+
+
+def get_window_class(hwnd):
+    """取窗口类名；失败返回空串，绝不抛异常。"""
+    if not hwnd:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        if not user32.GetClassNameW(hwnd, buf, 256):
+            return ""
+        return buf.value
+    except Exception:
+        return ""
+
+
+def window_from_point(x, y):
+    """屏幕坐标 (x, y) 正下方的最顶层窗口句柄（截图遮罩判定用）。"""
+    try:
+        return user32.WindowFromPoint(POINT(int(x), int(y)))
+    except Exception:
+        return 0
+
+
+def _process_name(hwnd):
+    """窗口所属进程的可执行文件名（小写）；失败返回空串。"""
+    pid = wt.DWORD()
+    if not hwnd or not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)):
+        return ""
+    # PROCESS_QUERY_LIMITED_INFORMATION：不要求管理员也能查路径
+    h = kernel32.OpenProcess(0x1000, False, pid.value)
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        size = wt.DWORD(260)
+        if not kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return ""
+        return buf.value.rsplit("\\", 1)[-1].lower()
+    finally:
+        kernel32.CloseHandle(h)
+
+
+def is_console_window(hwnd):
+    """是否控制台/终端宿主窗口：在这里自动发 Ctrl+C = 给程序喂中断。"""
+    if not hwnd:
+        return False
+    if get_window_class(hwnd) in _CONSOLE_CLASSES:
+        return True
+    return _process_name(hwnd) in _CONSOLE_PROCESSES
+
+
+def is_overlay_window(hwnd):
+    """是否『置顶 + 盖满屏幕』的遮罩层（系统/第三方截图工具的选框）。
+
+    用户按 PrtSc 后出现截图遮罩，在遮罩里拖动框选会被 MouseDragWatcher 误判
+    成"拖选文字"，松手后盲发 Ctrl+C 砸到随后的窗口上（cmd 收到＝中断＝多行）。
+    用『topmost + 覆盖 ≥90% 虚拟屏』这个几何特征把截图会话认出来并跳过。
+    """
+    if not hwnd:
+        return False
+    try:
+        if not user32.IsWindowVisible(hwnd):
+            return False
+        if not (user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & _WS_EX_TOPMOST):
+            return False
+        r = RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+            return False
+        vw = user32.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+        vh = user32.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+        if vw <= 0 or vh <= 0:             # 取不到虚拟屏时退回主屏
+            vw, vh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        return ((r.right - r.left) >= vw * 0.9
+                and (r.bottom - r.top) >= vh * 0.9)
+    except Exception:
+        return False
+
+
+def is_drag_blocked_at(x, y):
+    """拖选按下点所在窗口是否『不该自动抓词』。返回原因串或空串：
+    'console'=控制台（Ctrl+C 会被当中断）；'overlay'=截图遮罩（框选被当划词）。"""
+    hwnd = window_from_point(x, y)
+    if is_console_window(hwnd):
+        return "console"
+    if is_overlay_window(hwnd):
+        return "overlay"
+    return ""
+
+
 def get_cursor_pos():
     p = POINT()
     user32.GetCursorPos(ctypes.byref(p))
@@ -410,6 +527,10 @@ def get_screen_size():
 class RECT(ctypes.Structure):
     _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+user32.GetWindowRect.argtypes = [HANDLE, ctypes.POINTER(RECT)]
+user32.GetWindowRect.restype = wt.BOOL
 
 
 def get_work_area():
@@ -786,7 +907,7 @@ class MouseDragWatcher:
     COOLDOWN = 0.8              # 两次触发之间的最小间隔，防连发
 
     def __init__(self, on_drag_end):
-        self._on_drag_end = on_drag_end          # 回调 (x, y)：拖选弹起时的光标位置
+        self._on_drag_end = on_drag_end          # 回调 (x0,y0,x1,y1)：按下点与弹起点
         self._proc = None
         self._hook = None
         self._down = None                        # (x, y) 按下位置
@@ -814,15 +935,19 @@ class MouseDragWatcher:
         left, top, right, bottom = r
         return left <= x <= right and top <= y <= bottom
 
-    def _fire(self, x, y):
-        """统一触发点：防连发 + 忽略自身按钮区域。"""
-        if self._inside_ignore(x, y):
+    def _fire(self, x0, y0, x1, y1):
+        """统一触发点：防连发 + 忽略自身按钮区域。回调携带 (按下点, 弹起点)。
+
+        按下点供 main 判断『这次拖选发生在哪里』——截图遮罩里框选、控制台里
+        QuickEdit 拖选都不该走自动抓词（会盲发 Ctrl+C 造成中断）。
+        """
+        if self._inside_ignore(x1, y1):
             return
         now = __import__("time").perf_counter()
         if now - self._last_fire >= self.COOLDOWN:
             self._last_fire = now
             try:
-                self._on_drag_end(x, y)
+                self._on_drag_end(x0, y0, x1, y1)
             except Exception:
                 pass
 
@@ -841,12 +966,12 @@ class MouseDragWatcher:
                         self._down = None
                         self._dblclk = None
                         if max(abs(x1 - x0), abs(y1 - y0)) >= self.DRAG_THRESHOLD:
-                            self._fire(x1, y1)
+                            self._fire(x0, y0, x1, y1)
                     elif self._dblclk:           # —— 双击选词结束（松开）——
                         x0, y0 = self._dblclk
                         self._dblclk = None
                         if max(abs(x1 - x0), abs(y1 - y0)) <= self.DRAG_THRESHOLD:
-                            self._fire(x1, y1)
+                            self._fire(x0, y0, x1, y1)
             except Exception:
                 pass
         return user32.CallNextHookEx(self._hook, n_code, wparam, lparam)
