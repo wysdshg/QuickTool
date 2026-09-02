@@ -51,7 +51,7 @@ from qt.translator import Translator
 from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 
-APP_VERSION = "1.6.4"
+APP_VERSION = "1.6.5"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
@@ -111,8 +111,7 @@ class App:
         self._ocr_img = None            # 抓屏 BMP 临时文件路径
         self.pin_wins = []              # 截图对照小窗列表（可多个并存）
         self.note_win = None            # 置顶便签（单窗口累积，不并存多个）
-        self._last_hwnd = None          # 热键触发时的前台窗口（便签「回搜」切回用）
-        self._last_source = ""          # 同上的窗口标题（便签段头显示来源）
+        self._last_source = ""          # 便签段头显示来源（热键/拖选触发时记录）
         # 后台 worker 队列：重活一律不放进 Win32 消息循环线程（见 _capture_worker）
         self._cap_q = queue.Queue()     # 抓词（模拟 Ctrl+C + 等剪贴板）
         self._cap_lock = threading.Lock()   # 非阻塞 acquire 当作"进行中"标志
@@ -333,12 +332,10 @@ class App:
         if self.mini_btn and not self.mini_btn.closed:
             return
         x, y = getattr(self, "_drag_pt", (0, 0))
-        # 此刻前台仍是用户正在读的那个窗口（刚松开鼠标），记下句柄和标题。
-        # 迷你按钮『便』点击后靠它给便签填来源、以及「回搜」时切回去——
+        # 此刻前台仍是用户正在读的那个窗口（刚松开鼠标），记下标题当来源。
         # 与热键 Ctrl+Alt+N 路径一致。放在消息循环线程而非钩子回调里。
         hwnd = wa.get_foreground_window()
         if hwnd:
-            self._last_hwnd = hwnd
             self._last_source = wa.get_window_title(hwnd)
         self._request_capture("drag", (x, y))
 
@@ -580,9 +577,8 @@ class App:
                 self.q.put(("pin_select", None))
             elif wparam == HK_NOTE:
                 # 此刻前台还是用户正在读的窗口（抓词模拟 Ctrl+C 后焦点可能
-                # 变化），立刻记下句柄和标题——便签「回搜」靠它切回去
+                # 变化），立刻记下标题当便签来源
                 hwnd = wa.get_foreground_window()
-                self._last_hwnd = hwnd
                 self._last_source = wa.get_window_title(hwnd)
                 self.q.put(("note", None))
             elif wparam == HK_SETTINGS:
@@ -612,7 +608,6 @@ class App:
                     self.q.put(("pin_select", None))
                 elif cmd == TRAY_NOTE:
                     hwnd = wa.get_foreground_window()
-                    self._last_hwnd = hwnd
                     self._last_source = wa.get_window_title(hwnd)
                     self.q.put(("note", None))
                 elif cmd == TRAY_QUIT:
@@ -892,8 +887,7 @@ class App:
             ls.get_logger().info("NOTE-APPEND total=%s", self.note_win.count)
         else:
             try:
-                self.note_win = NoteWindow(self, text, source,
-                                           last_hwnd=self._last_hwnd)
+                self.note_win = NoteWindow(self, text, source)
             except Exception as exc:
                 ls.log_exc("NOTE-FAIL")
                 self.q.put(("toast", ("便签创建失败", str(exc))))

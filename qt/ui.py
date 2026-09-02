@@ -675,9 +675,10 @@ class NoteWindow:
         滚动顺序就是你的跳转历史 —— 窗口本身就是锚点栈的可视化。
       - **可编辑**：查完术语可以把解释直接贴回片段下面，几轮下来这份便签
         自动变成带原文上下文的学习笔记。
-      - **回搜**：把光标所在片段的开头几个字送进来源应用自己的查找框
-        （合成 Ctrl+F + Ctrl+V）。这是「回到原处」的实用解 —— 不去猜原文
-        位置，让应用自己搜自己，虚拟滚动 / Electron 客户端一律通吃。
+      - **搜索**：顶部「搜索」按钮弹出输入框，实时在便签全文里高亮命中并
+        跳转到当前匹配（Enter / Shift+Enter 在命中间前后移动，Esc 关闭）。
+        便签本身是「把散落片段攒到一起长期看」的工具，内部搜索比「跳回原
+        应用搜」更直觉也更常用。
       - 零第三方依赖：ScrolledText 是 tkinter 自带的。
 
     和 PinWindow 的差异：正文换成可编辑文本，所以拖动只绑工具条 ——
@@ -690,12 +691,11 @@ class NoteWindow:
     MAX_CHARS = 50000      # 累积上限，超出从头整段裁剪，防长时间使用爆内存
     HEAD_TAG = "seghead"
 
-    def __init__(self, app, text="", source="", last_hwnd=None):
+    def __init__(self, app, text="", source=""):
         self.app = app
         self.closed = False
         self._count = 0                 # 累计片段数
         self._first = 1                 # 现存最老的片段号（裁剪会推进）
-        self.last_hwnd = last_hwnd      # 触发时的前台窗口（回搜用）
 
         # 用户上一次调整过的窗口大小优先（无记忆/越界则回默认并夹紧）
         cfg = getattr(app, "cfg", None)
@@ -713,7 +713,9 @@ class NoteWindow:
 
         outer = tk.Frame(win, bg=THEMES["dark"]["border"])
         outer.pack(fill="both", expand=True)
-        self._build_bar(outer)
+        top = tk.Frame(outer, bg=THEMES["dark"]["border"])
+        top.pack(fill="x")
+        self._build_bar(top)
 
         self.txt = ScrolledText(
             outer, wrap="word", undo=True,
@@ -722,6 +724,7 @@ class NoteWindow:
             relief="flat", bd=0, padx=8, pady=6,
             font=(FONT_CN, 10), spacing1=2, spacing3=2)
         self.txt.pack(fill="both", expand=True)
+        self._build_search_bar(top)
         self.txt.tag_configure(self.HEAD_TAG,
                                foreground=THEMES["dark"]["sub"],
                                font=(FONT_CN, 8))
@@ -769,7 +772,7 @@ class NoteWindow:
         for txt, cmd in ((" ✕ ", self.close), (" 清空 ", self._clear),
                          (" 存 txt ", self._save_txt),
                          (" 复制 ", self._copy_all),
-                         (" 回搜 ", self._back_search)):
+                         (" 搜索 ", self._toggle_search)):
             b = tk.Label(bar, text=txt, font=(FONT_CN, 9),
                          fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
                          cursor="hand2", padx=4)
@@ -786,7 +789,7 @@ class NoteWindow:
         start = self.txt.index("end-1c")
         self.txt.insert("end", text.rstrip() + "\n\n")
         end = self.txt.index("end-1c")
-        self.txt.tag_add(f"seg{self._count}", start, end)   # 回搜定位用
+        self.txt.tag_add(f"seg{self._count}", start, end)   # 片段定位 tag
         self._trim()
         self.txt.see("end")
         self.lbl.configure(text=f"便签 · {self._count} 段 · Esc 关闭")
@@ -809,53 +812,141 @@ class NoteWindow:
             except Exception:
                 break
 
-    # ------------------------------------------------------------ 动作
-    def _back_search(self):
-        """把光标所在片段的开头送进来源应用的查找框，让它自己搜。
+    # ------------------------------------------------------------ 搜索（便签内全文搜索）
+    def _build_search_bar(self, parent):
+        """顶部『搜索』按钮弹出的内联搜索条：输入框 + 计数 + 上/下一条 + 关闭。
 
-        虚拟滚动会回收屏幕外 DOM、Electron 应用常常不开可访问性树 ——
-        这些都难不倒「让应用自己搜自己」。不需要知道原文在哪，那段话的
-        前 60 个字符就够定位了。
+        搜索条挂在 top 容器里（bar 之下、正文之上），默认 pack_forget 隐藏。
         """
-        kw = self._keyword_at_cursor()
-        if not kw:
-            self._toast("回搜", "把光标点到某一段里，再按回搜。")
-            return
-        if not self.last_hwnd:
-            self._toast("回搜", "没记录到来源窗口（用快捷键触发才会有）。")
-            return
-        wa.set_clipboard_text(kw)
-        wa.set_foreground(self.last_hwnd)
-        # 切窗口、开查找框都要时间：用 after 分步，绝不阻塞主线程
-        self.win.after(220, wa.send_ctrl_f)
-        self.win.after(420, wa.send_ctrl_v)
-        self._toast("已跳回原处搜索", kw[:40])
+        sb = tk.Frame(parent, bg=THEMES["dark"]["card"])
+        self._search_bar = sb
+        self._search_matches = []
+        self._search_idx = 0
+        self._search_open = False
 
-    def _keyword_at_cursor(self):
-        """光标所在片段正文的前 60 字；光标不在任何片段内就取最后一段。"""
-        idx = self.txt.index("insert")
-        picked = ""
-        for n in range(self._first, self._count + 1):
-            rng = self.txt.tag_ranges(f"seg{n}")
-            if len(rng) < 2:
-                continue
-            s, e = str(rng[0]), str(rng[1])
-            if self.txt.compare(s, "<=", idx) and self.txt.compare(idx, "<=", e):
-                picked = self.txt.get(s, self._clip60(s, e))
+        ent = tk.Entry(sb, font=(FONT_CN, 10),
+                       bg=THEMES["dark"]["border"], fg=THEMES["dark"]["fg"],
+                       insertbackground=THEMES["dark"]["fg"],
+                       relief="flat", bd=0,
+                       highlightthickness=1,
+                       highlightcolor=THEMES["dark"]["accent"])
+        ent.pack(side="left", fill="x", expand=True, padx=6, pady=4)
+        self._search_entry = ent
+
+        lbl = tk.Label(sb, text="0/0", font=(FONT_CN, 9),
+                       fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"])
+        lbl.pack(side="right", padx=(0, 4))
+        self._search_label = lbl
+
+        nxt = tk.Label(sb, text=" ▾ ", font=(FONT_CN, 9),
+                       fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                       cursor="hand2")
+        nxt.pack(side="right")
+        nxt.bind("<Button-1>", lambda e=None: self._search_next())
+        prv = tk.Label(sb, text=" ▴ ", font=(FONT_CN, 9),
+                       fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                       cursor="hand2")
+        prv.pack(side="right")
+        prv.bind("<Button-1>", lambda e=None: self._search_prev())
+        close = tk.Label(sb, text=" ✕ ", font=(FONT_CN, 9),
+                         fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                         cursor="hand2")
+        close.pack(side="right", padx=(4, 2))
+        close.bind("<Button-1>", lambda e=None: self._toggle_search(force=False))
+
+        # 输入框事件：每次按键实时搜；Enter/Shift+Enter 前后跳；Esc 关搜索条
+        ent.bind("<KeyRelease>", self._do_search)
+        ent.bind("<Return>", self._search_next)
+        ent.bind("<Shift-Return>", self._search_prev)
+        ent.bind("<Escape>", lambda e=None: self._toggle_search(force=False))
+        sb.pack_forget()
+
+        # 高亮 tag：全部命中（蓝底）+ 当前命中（金底，更醒目）
+        self.txt.tag_configure("search_hit",
+                               background=THEMES["dark"]["accent"],
+                               foreground="#0b1220")
+        self.txt.tag_configure("search_cur",
+                               background="#ffd166", foreground="#0b1220")
+
+    def _toggle_search(self, force=None):
+        """点击『搜索』切换搜索条；force=False 强制收起（关闭按钮 / Esc）。
+
+        开合状态用显式布尔 `_search_open` 记录（而非依赖 winfo_ismapped，
+        后者在无头/未映射窗口下不可靠）。
+        """
+        if force is False or self._search_open:
+            self._search_bar.pack_forget()
+            self._search_open = False
+            self._clear_search()
+            self.txt.focus_set()
+            return
+        self._search_bar.pack(fill="x")
+        self._search_open = True
+        self._search_entry.delete(0, "end")
+        self._search_entry.focus_set()
+
+    def _clear_search(self):
+        self.txt.tag_remove("search_hit", "1.0", "end")
+        self.txt.tag_remove("search_cur", "1.0", "end")
+        self._search_matches = []
+        self._search_idx = 0
+        if getattr(self, "_search_label", None) is not None:
+            self._search_label.configure(text="0/0")
+
+    def _do_search(self, event=None):
+        """实时全文搜索：高亮全部命中，跳到第一条，更新 n/m 计数。"""
+        q = self._search_entry.get().strip()
+        self.txt.tag_remove("search_hit", "1.0", "end")
+        self.txt.tag_remove("search_cur", "1.0", "end")
+        self._search_matches = []
+        self._search_idx = 0
+        if not q:
+            self._search_label.configure(text="0/0")
+            return
+        n = len(q)
+        start = "1.0"
+        while True:
+            pos = self.txt.search(q, start, stopindex="end", nocase=True)
+            if not pos:
                 break
-        if not picked:
-            rng = self.txt.tag_ranges(f"seg{self._count}")
-            if len(rng) >= 2:
-                s, e = str(rng[0]), str(rng[1])
-                picked = self.txt.get(s, self._clip60(s, e))
-        return picked.strip()
+            end = f"{pos}+{n}c"
+            self.txt.tag_add("search_hit", pos, end)
+            self._search_matches.append((pos, end))
+            start = end                      # 跳过本命中，避免死循环
+        total = len(self._search_matches)
+        if total:
+            self._search_idx = 0
+            self._show_match()
+            self._search_label.configure(text=f"1/{total}")
+        else:
+            self._search_label.configure(text="0/0")
 
-    def _clip60(self, start, seg_end):
-        """段内前 60 字：+60c 可能越过段尾把下一段的段头带进来，裁到边界内。"""
-        end = f"{start} +60c"
-        if self.txt.compare(end, ">", seg_end):
-            end = seg_end
-        return end
+    def _show_match(self):
+        if not self._search_matches:
+            return
+        self._search_idx %= len(self._search_matches)
+        pos, end = self._search_matches[self._search_idx]
+        self.txt.tag_remove("search_cur", "1.0", "end")
+        self.txt.tag_add("search_cur", pos, end)
+        self.txt.see(pos)
+
+    def _search_next(self, event=None):
+        if not self._search_matches:
+            return "break"
+        self._search_idx = (self._search_idx + 1) % len(self._search_matches)
+        self._show_match()
+        self._search_label.configure(
+            text=f"{self._search_idx + 1}/{len(self._search_matches)}")
+        return "break"
+
+    def _search_prev(self, event=None):
+        if not self._search_matches:
+            return "break"
+        self._search_idx = (self._search_idx - 1) % len(self._search_matches)
+        self._show_match()
+        self._search_label.configure(
+            text=f"{self._search_idx + 1}/{len(self._search_matches)}")
+        return "break"
 
     def _copy_all(self):
         text = self.txt.get("1.0", "end-1c")
@@ -1308,7 +1399,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.4 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.5 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
