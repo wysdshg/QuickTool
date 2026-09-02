@@ -51,7 +51,7 @@ from qt.translator import Translator
 from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
@@ -198,14 +198,19 @@ class App:
             self._clip_snap = None
 
     def _test_note(self):
-        """置顶便签链路自检：创建 -> 追加累积 -> 关闭，测完不留窗口。"""
+        """置顶便签链路自检：创建 -> 追加累积 -> 迷你按钮『便』-> 关闭。"""
         try:
             self.open_note("e2e note probe alpha segment", "E2E")
             ok1 = bool(self.note_win and not self.note_win.closed)
             self.open_note("second probe segment for accumulation", "E2E2")
             total = self.note_win.count if self.note_win else 0
+            # v1.6.3：迷你按钮『便』走 mini_note 分支——跳过抓词直接入便签，
+            # 与按 Ctrl+Alt+N 终点相同。这里验证它能正确累积（应到 3 段）。
+            self.mini_note("third segment via mini note button")
+            total2 = self.note_win.count if self.note_win else 0
             e2e_log(f"NOTE_SHOWN={ok1}")
             e2e_log(f"NOTE_TOTAL={total}")
+            e2e_log(f"MINI_NOTE_TOTAL={total2}")
             self.root.after(200, self._close_note_after_test)
         except Exception as exc:
             e2e_log(f"NOTE_SHOWN=False:{type(exc).__name__}")
@@ -328,6 +333,13 @@ class App:
         if self.mini_btn and not self.mini_btn.closed:
             return
         x, y = getattr(self, "_drag_pt", (0, 0))
+        # 此刻前台仍是用户正在读的那个窗口（刚松开鼠标），记下句柄和标题。
+        # 迷你按钮『便』点击后靠它给便签填来源、以及「回搜」时切回去——
+        # 与热键 Ctrl+Alt+N 路径一致。放在消息循环线程而非钩子回调里。
+        hwnd = wa.get_foreground_window()
+        if hwnd:
+            self._last_hwnd = hwnd
+            self._last_source = wa.get_window_title(hwnd)
         self._request_capture("drag", (x, y))
 
     # ============================================================ 后台 worker
@@ -743,6 +755,17 @@ class App:
             self.popup.close()
         self._mini_pending = text
         wa.post_message(self.hwnd, WM_APP_MINI_TRANSLATE)
+
+    def mini_note(self, text):
+        """迷你按钮『便』点击（主线程）：把文字钉进置顶便签。
+
+        等价于按 Ctrl+Alt+N，区别只是文字在拖选结束时已经抓好了，不必再走
+        一次「模拟 Ctrl+C + 等剪贴板」。来源窗口在 _handle_drag_end 就记下。
+        """
+        self._hide_mini_button()
+        if not (text or "").strip():
+            return
+        self.open_note(text, self._last_source or "")
 
     # ------------------------------------------------------------ 截图翻译
     def open_ocr(self):

@@ -217,15 +217,25 @@ class Popup:
 
 # ================================================================== 迷你按钮
 class MiniButton:
-    """『译』字迷你按钮：拖选文字后出现在鼠标旁，点击即翻译。
+    """『译』『便』双按钮：拖选文字后出现在鼠标旁。
 
-    目标就是『小 + 不挡视野』：26x26 圆形、半透明、置顶无边框，
-    鼠标一进去就取消自动隐藏，点一下出译文、再点空白或等 2.2s 就消失。
+    左『译』点击即翻译，右『便』点击把这段文字钉进置顶便签（等同 Ctrl+Alt+N，
+    但文字已经在拖选时抓好了，不必再动一次剪贴板）。
+
+    目标就是『小 + 不挡视野』：两个 26x26 圆形并排、半透明、置顶无边框，
+    鼠标一进去就取消自动隐藏，点一下出译文/进便签、移开或等 2.2s 就消失。
     """
 
-    SIZE = 26
+    SIZE = 26          # 单个圆形按钮直径
+    GAP = 2            # 两圆间隙
+    LABELS = ("译", "便")   # 顺序即回调分流顺序：0=翻译，1=便签
     HIDE_MS = 2200       # 出现后自动消失的时间（鼠标进入即暂停计时）
     FONT_SIZE = 11
+
+    @property
+    def width(self):
+        """整个按钮条宽度（两个圆 + 间隙），供 geometry / 钩子忽略区使用。"""
+        return self.SIZE * len(self.LABELS) + self.GAP * (len(self.LABELS) - 1)
 
     def __init__(self, app, x, y, text):
         self.app = app
@@ -248,51 +258,85 @@ class MiniButton:
 
     def _draw(self, th):
         s = self.SIZE
-        cv = tk.Canvas(self.win, width=s, height=s, highlightthickness=0,
+        cv = tk.Canvas(self.win, width=self.width, height=s, highlightthickness=0,
                        bg=th["card"], cursor="hand2")
         cv.pack()
-        cv.create_oval(1, 1, s - 1, s - 1, fill=th["card"], outline=th["border"],
-                       width=1, tags="bg")
-        cv.create_text(s // 2, s // 2, text="译", fill=th["accent"], tags="txt",
-                       font=("Microsoft YaHei UI", self.FONT_SIZE, "bold"))
+        for i, label in enumerate(self.LABELS):
+            x0 = i * (s + self.GAP)
+            cv.create_oval(x0 + 1, 1, x0 + s - 1, s - 1, fill=th["card"],
+                           outline=th["border"], width=1,
+                           tags=(f"bg{i}", "bg"))
+            cv.create_text(x0 + s // 2, s // 2, text=label, fill=th["accent"],
+                           tags=(f"txt{i}", "txt"),
+                           font=("Microsoft YaHei UI", self.FONT_SIZE, "bold"))
         self.cv = cv
+        self._hot = -1          # 当前悬停的按钮索引（-1 = 无）
 
     def _place(self, x, y):
-        s = self.SIZE
+        s, w = self.SIZE, self.width
         left, top, right, bottom = wa.get_work_area()
-        px = min(x + 10, right - s - 6)
+        px = min(x + 10, right - w - 6)
         py = y + 16
         if py + s > bottom:
             py = max(top + 6, y - s - 10)
         px = max(left + 6, px)
-        self.win.geometry(f"{s}x{s}+{int(px)}+{int(py)}")
+        self.win.geometry(f"{w}x{s}+{int(px)}+{int(py)}")
         self.win.update_idletasks()
 
     def _bind(self):
-        self.win.bind("<Button-1>", lambda e: self._click())
-        self.win.bind("<Enter>", lambda e: self._hover(True))
+        self.win.bind("<Button-1>", self._click)
+        # 鼠标进入即取消自动隐藏：按钮条变宽后，移到右侧『便』需要更多时间，
+        # 若初始 2.2s 计时照跑，常常还没点到就消失了。
+        self.win.bind("<Enter>",
+                      lambda e: (self._hover(True), self._cancel_hide()))
         self.win.bind("<Leave>",
                       lambda e: (self._hover(False), self._schedule_hide(1200)))
-        self.cv.bind("<Button-1>", lambda e: self._click())
+        self.cv.bind("<Button-1>", self._click)
+        self.cv.bind("<Motion>", lambda e: self._hot_move(e.x))
 
-    def _hover(self, on):
+    def _index_at(self, x):
+        """画布 x 坐标 -> 落在第几个按钮上（越界夹到 0..n-1）。"""
+        n = len(self.LABELS)
+        i = int(x // (self.SIZE + self.GAP))
+        return 0 if i < 0 else (n - 1 if i > n - 1 else i)
+
+    def _hot_move(self, x):
+        i = self._index_at(x)
+        if i == self._hot:
+            return
+        self._hot = i
+        self._paint_hot()
+
+    def _paint_hot(self):
         try:
-            self.cv.itemconfigure("bg",
-                                  fill=self.th["hover"] if on else self.th["card"])
+            for i in range(len(self.LABELS)):
+                self.cv.itemconfigure(
+                    f"bg{i}",
+                    fill=self.th["hover"] if i == self._hot else self.th["card"])
         except Exception:
             pass
 
-    def _click(self):
+    def _hover(self, on):
+        if not on:
+            self._hot = -1
+        self._paint_hot()
+
+    def _click(self, event=None):
+        """按落点 x 分流：左『译』走翻译，右『便』加入便签。"""
         text = self.text
+        idx = self._index_at(getattr(event, "x", 0) or 0)
         self.close()
-        self.app.mini_translate(text)
+        if idx == 0:
+            self.app.mini_translate(text)
+        else:
+            self.app.mini_note(text)
 
     def get_rect(self):
         """屏幕坐标矩形 (left, top, right, bottom)，供鼠标钩子忽略自身区域。"""
         if self.closed:
             return None
         x, y = self.win.winfo_x(), self.win.winfo_y()
-        return (x - 2, y - 2, x + self.SIZE + 2, y + self.SIZE + 2)
+        return (x - 2, y - 2, x + self.width + 2, y + self.SIZE + 2)
 
     def _schedule_hide(self, delay):
         self._cancel_hide()
@@ -1253,7 +1297,7 @@ class Settings(tk.Toplevel):
         ttk.Checkbutton(f, text="跟随鼠标光标定位（关闭则居中显示）",
                         variable=self.follow_var).pack(anchor="w", pady=2)
         self.mini_var = tk.BooleanVar(value=bool(self.cfg.get("mini_button", True)))
-        ttk.Checkbutton(f, text="选中文字后自动显示『译』迷你按钮（点击即翻译）",
+        ttk.Checkbutton(f, text="选中文字后自动显示『译』『便』迷你按钮（翻译 / 加便签）",
                         variable=self.mini_var).pack(anchor="w", pady=2)
 
     # ------------------------------------------------------------ 底部
@@ -1264,7 +1308,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.2 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.3 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
