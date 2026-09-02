@@ -160,9 +160,9 @@ class Popup:
     # ------------------------------------------------------------ 交互
     def _bind(self):
         w = self.win
-        w.bind("<Escape>", lambda e: self.close())
-        w.bind("<FocusIn>", lambda e: self._cancel_close())
-        w.bind("<FocusOut>", lambda e: self._schedule_close(260))
+        w.bind("<Escape>", lambda e=None: self.close())
+        w.bind("<FocusIn>", lambda e=None: self._cancel_close())
+        w.bind("<FocusOut>", lambda e=None: self._schedule_close(260))
         for child in (w, self.card, self.body):
             child.bind("<ButtonPress-1>", self._drag_start)
             child.bind("<B1-Motion>", self._drag_move)
@@ -288,11 +288,11 @@ class MiniButton:
         # 鼠标进入即取消自动隐藏：按钮条变宽后，移到右侧『便』需要更多时间，
         # 若初始 2.2s 计时照跑，常常还没点到就消失了。
         self.win.bind("<Enter>",
-                      lambda e: (self._hover(True), self._cancel_hide()))
+                      lambda e=None: (self._hover(True), self._cancel_hide()))
         self.win.bind("<Leave>",
-                      lambda e: (self._hover(False), self._schedule_hide(1200)))
+                      lambda e=None: (self._hover(False), self._schedule_hide(1200)))
         self.cv.bind("<Button-1>", self._click)
-        self.cv.bind("<Motion>", lambda e: self._hot_move(e.x))
+        self.cv.bind("<Motion>", lambda e=None: self._hot_move(e.x))
 
     def _index_at(self, x):
         """画布 x 坐标 -> 落在第几个按钮上（越界夹到 0..n-1）。"""
@@ -400,8 +400,8 @@ class RegionSelector(tk.Toplevel):
         cv.bind("<ButtonPress-1>", self._press)
         cv.bind("<B1-Motion>", self._drag)
         cv.bind("<ButtonRelease-1>", self._release)
-        self.bind("<Escape>", lambda e: self.close())
-        self.bind("<Button-3>", lambda e: self.close())
+        self.bind("<Escape>", lambda e=None: self.close())
+        self.bind("<Button-3>", lambda e=None: self.close())
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.deiconify()
         self.lift()
@@ -528,12 +528,12 @@ class PinWindow:
                           fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
                           cursor="hand2", padx=6)
         b_save.pack(side="right")
-        b_save.bind("<Button-1>", lambda e: self._save_png())
+        b_save.bind("<Button-1>", lambda e=None: self._save_png())
         b = tk.Label(bar, text=" ✕ ", font=("Microsoft YaHei UI", 10),
                      fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
                      cursor="hand2", padx=6)
         b.pack(side="right")
-        b.bind("<Button-1>", lambda e: self.close())
+        b.bind("<Button-1>", lambda e=None: self.close())
 
     def _fit_size(self):
         """按工作区 85% 上限取初始缩放倍数（只缩小，不放大）。"""
@@ -596,10 +596,10 @@ class PinWindow:
     # ------------------------------------------------------------ 交互
     def _bind(self):
         win = self.win
-        win.bind("<Escape>", lambda e: self.close())
-        win.bind("<Button-3>", lambda e: self.close())
-        win.bind("<Control-s>", lambda e: self._save_png())
-        win.bind("<Control-S>", lambda e: self._save_png())
+        win.bind("<Escape>", lambda e=None: self.close())
+        win.bind("<Button-3>", lambda e=None: self.close())
+        win.bind("<Control-s>", lambda e=None: self._save_png())
+        win.bind("<Control-S>", lambda e=None: self._save_png())
         # 整窗拖动（含工具条与画布）；按下即置前（多窗口「点谁谁在前」）
         for wdg in (win, self.cv):
             wdg.bind("<ButtonPress-1>", self._drag_start)
@@ -958,9 +958,9 @@ class NoteWindow:
 
     def _bind(self):
         win = self.win
-        win.bind("<Escape>", lambda e: self.close())
-        win.bind("<Control-s>", lambda e: self._save_txt())
-        win.bind("<Control-S>", lambda e: self._save_txt())
+        win.bind("<Escape>", lambda e=None: self.close())
+        win.bind("<Control-s>", lambda e=None: self._save_txt())
+        win.bind("<Control-S>", lambda e=None: self._save_txt())
         # 拖动只绑工具条：绑到 Toplevel 的话点击正文会经 bindtags 传播过来
         self._bar.bind("<ButtonPress-1>", self._drag_start)
         self._bar.bind("<B1-Motion>", self._drag_move)
@@ -1106,12 +1106,12 @@ class Settings(tk.Toplevel):
         inner = tk.Frame(canvas, bg="#f5f7fa")
         inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         inner.bind("<Configure>",
-                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+                   lambda e=None: canvas.configure(scrollregion=canvas.bbox("all")))
         # 内容宽度跟随窗口：不然 inner 以自然宽度渲染，超宽部分被横向裁掉
         canvas.bind("<Configure>",
-                    lambda e: canvas.itemconfigure(inner_id, width=e.width))
+                    lambda e=None: canvas.itemconfigure(inner_id, width=e.width))
         canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+                        lambda e=None: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         self._section_engine(inner)
         self._section_hotkey(inner)
@@ -1308,7 +1308,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.3 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.4 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
