@@ -169,10 +169,15 @@ class Popup:
         w.after(30, lambda: wa.set_tool_window(w.winfo_id(), True))
         w.focus_force()
 
-    def _drag_start(self, event):
+    def _drag_start(self, event=None):
+        # 铁律(v1.6.4)：Tk 回调须容忍无参调用（销毁竞态）；无 event = 未发生拖动
+        if event is None:
+            return
         self._dx, self._dy = event.x, event.y
 
-    def _drag_move(self, event):
+    def _drag_move(self, event=None):
+        if event is None:
+            return
         try:
             self.win.geometry(f"+{self.win.winfo_x() + event.x - self._dx}"
                               f"+{self.win.winfo_y() + event.y - self._dy}")
@@ -407,29 +412,36 @@ class RegionSelector(tk.Toplevel):
         self.lift()
         self.focus_force()
 
-    def _press(self, ev):
-        self._sx, self._sy = ev.x, ev.y
+    def _press(self, event=None):
+        if event is None:
+            return
+        self._sx, self._sy = event.x, event.y
         self._pressed = True
         if self._rect:
             self.cv.delete(self._rect)
 
-    def _drag(self, ev):
+    def _drag(self, event=None):
+        if event is None:
+            return
         if self._rect:
             self.cv.delete(self._rect)
         self._rect = self.cv.create_rectangle(
-            self._sx, self._sy, ev.x, ev.y,
+            self._sx, self._sy, event.x, event.y,
             outline="#22c55e", width=2)
 
-    def _release(self, ev):
+    def _release(self, event=None):
         # 孤儿 release（无 press 配对）直接忽略：遮罩弹出瞬间若鼠标残留
         # 按下状态，松手会带 _sx/_sy=0，从屏幕左上角(0,0)到鼠标位置生成
         # 一个巨大的"随机"选区直接截屏（v1.5.2 实测：1124x110/968x134
         # 两个左上角矩形，用户没动鼠标却完成截图）。
+        if event is None:
+            self._pressed = False    # 销毁竞态无配对事件：绝不触发截图
+            return
         if not self._pressed:
             return
         self._pressed = False
-        x0, x1 = sorted((self._sx, ev.x))
-        y0, y1 = sorted((self._sy, ev.y))
+        x0, x1 = sorted((self._sx, event.x))
+        y0, y1 = sorted((self._sy, event.y))
         w, h = x1 - x0, y1 - y0
         if w < self.MIN_SIZE or h < self.MIN_SIZE:
             self.close()                     # 误触，取消
@@ -620,17 +632,24 @@ class PinWindow:
         self.cv.bind("<Button-4>", self._zoom)   # Linux 上滚
         self.cv.bind("<Button-5>", self._zoom)   # Linux 下滚
 
-    def _drag_start(self, event):
+    def _drag_start(self, event=None):
+        # 铁律(v1.6.4)：Tk 回调须容忍无参调用（销毁竞态）；无 event = 未发生拖动
+        if event is None:
+            return
         self._dx, self._dy = event.x, event.y
 
-    def _drag_move(self, event):
+    def _drag_move(self, event=None):
+        if event is None:
+            return
         try:
             self.win.geometry(f"+{self.win.winfo_x() + event.x - self._dx}"
                               f"+{self.win.winfo_y() + event.y - self._dy}")
         except Exception:
             pass
 
-    def _zoom(self, event):
+    def _zoom(self, event=None):
+        if event is None:
+            return
         if getattr(event, "num", 0) == 5:          # Linux 下滚 = 缩小
             delta = 1
         elif getattr(event, "num", 0) == 4:        # Linux 上滚 = 放大
@@ -777,7 +796,9 @@ class NoteWindow:
                          fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
                          cursor="hand2", padx=4)
             b.pack(side="right")
-            b.bind("<Button-1>", lambda e, c=cmd: c())
+            # v1.6.4 铁律：Tk 回调必须容忍无参调用（widget 销毁竞态中 Tk 可能
+            # 不带 event 调用绑定回调，`lambda e:` 会抛 TypeError 打断主循环）
+            b.bind("<Button-1>", lambda e=None, c=cmd: c())
 
     def append(self, text, source=""):
         """追加一条片段。段头 = 序号 + 时间 + 来源窗口标题（灰色小字）。"""
@@ -1007,13 +1028,17 @@ class NoteWindow:
             y = min(max(cy - h // 2, top + 4), bottom - h - 4)
         self.win.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
 
-    def _rs_start(self, event):
+    def _rs_start(self, event=None):
         """右下角手柄按下：记录拖拽起点与当前窗口尺寸。"""
+        if event is None:
+            return
         self._rs = (event.x_root, event.y_root,
                     self.win.winfo_width(), self.win.winfo_height())
 
-    def _rs_move(self, event):
+    def _rs_move(self, event=None):
         """右下角拖拽缩放：左上角不动，只改宽高（夹紧到 MIN/MAX）。"""
+        if event is None:
+            return
         try:
             x0, y0, w0, h0 = self._rs
         except AttributeError:
@@ -1063,10 +1088,15 @@ class NoteWindow:
         except Exception:
             pass
 
-    def _drag_start(self, event):
+    def _drag_start(self, event=None):
+        # 铁律(v1.6.4)：Tk 回调须容忍无参调用（销毁竞态）；无 event = 未发生拖动
+        if event is None:
+            return
         self._dx, self._dy = event.x, event.y
 
-    def _drag_move(self, event):
+    def _drag_move(self, event=None):
+        if event is None:
+            return
         try:
             self.win.geometry(f"+{self.win.winfo_x() + event.x - self._dx}"
                               f"+{self.win.winfo_y() + event.y - self._dy}")
@@ -1201,8 +1231,13 @@ class Settings(tk.Toplevel):
         # 内容宽度跟随窗口：不然 inner 以自然宽度渲染，超宽部分被横向裁掉
         canvas.bind("<Configure>",
                     lambda e=None: canvas.itemconfigure(inner_id, width=e.width))
-        canvas.bind_all("<MouseWheel>",
-                        lambda e=None: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        # 滚轮必须绑在 Settings 自身 Toplevel 而非 bind_all：
+        # bind_all 挂在 app 级 bindtag 'all' 上，窗口销毁后 handler 不随窗口移除，
+        # 仍引用已销毁的 canvas——此后任何窗口滚轮都会对死 canvas 调 yview_scroll
+        # 抛 TclError（真实症状：关闭设置后日志持续刷 UNCAUGHT-TK，2026-09-03 实证）。
+        # Toplevel 级绑定经 bindtags 对全部子控件生效，且随窗口销毁自动清除。
+        self.bind("<MouseWheel>",
+                  lambda e=None: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
 
         self._section_engine(inner)
         self._section_hotkey(inner)
@@ -1286,12 +1321,15 @@ class Settings(tk.Toplevel):
             self.hk_vars[key] = var
             e = ttk.Entry(f, textvariable=var, width=18)
             self._row(f, label, e)
-            e.bind("<KeyPress>", lambda ev, v=var: self._capture(ev, v))
+            e.bind("<KeyPress>", lambda ev=None, v=var: self._capture(ev, v))
         tk.Label(f, text="注意：录制时全局热键也会同时触发一次，属正常现象。",
                  fg="#8a94a6", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(anchor="w")
 
-    def _capture(self, event, var):
+    def _capture(self, event=None, var=None):
+        # 热键录制同样遵守铁律：销毁竞态下 Tk 可能无参调用，直接忽略即可
+        if event is None:
+            return
         st = event.state
         mods = []
         if st & 0x0004:
@@ -1399,7 +1437,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.6 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.7 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
