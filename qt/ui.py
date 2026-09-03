@@ -15,14 +15,40 @@ from .engines import ENGINES, engine_display_names
 FONT_CN = "Microsoft YaHei UI"
 FONT_MONO = "Consolas"
 
+# v1.6.9 ⑥：所有窗口一律经 current_theme() 取色，禁止再写 THEMES["dark"]。
+# win     = 常规窗口/页面底色（Settings 这类有正常标题栏的窗口背景）
+# canvas  = 图像查看区底色（截图对照小窗的画布）
+# on_mask = 半透明遮罩上的文字色 —— RegionSelector 的遮罩恒为半透明黑
+#           （截图必须压暗屏幕内容），所以两个主题都用浅色，绝不能跟 fg
+#           走：light 主题的 fg 是深色，写在黑遮罩上根本看不见。
+# on_accent= accent 底色上的文字（便签搜索命中高亮）。dark 的 accent 是亮
+#           蓝配深字，light 的 accent 是中蓝必须配白字——写死一个值必有一
+#           个主题看不清，所以只能进主题表。
 THEMES = {
     "dark": {"card": "#232936", "border": "#3a4256", "fg": "#e9edf5",
              "sub": "#93a0b5", "accent": "#5aa9ff", "hover": "#2e3648",
-             "danger": "#ff6b6b"},
+             "danger": "#ff6b6b", "win": "#1b202b", "canvas": "#1c212b",
+             "on_mask": "#e8f0ff", "on_accent": "#0b1220"},
     "light": {"card": "#ffffff", "border": "#dfe5ee", "fg": "#1f2430",
               "sub": "#6b7688", "accent": "#2563eb", "hover": "#f2f5fa",
-              "danger": "#e0483c"},
+              "danger": "#e0483c", "win": "#f5f7fa", "canvas": "#e9edf3",
+              "on_mask": "#e8f0ff", "on_accent": "#ffffff"},
 }
+
+
+def current_theme(app, fallback="dark"):
+    """取当前生效的主题字典（v1.6.9 ⑥ 统一取色入口）。
+
+    所有窗口都经此取色，杜绝写死 dark 主题。app 为空、配置缺失、主题名
+    非法一律退回 fallback——**取色失败绝不能抛异常**：窗口构建期抛异常
+    等于功能直接不可用，而主题只该影响外观。
+    """
+    try:
+        p = app.cfg.get("popup") if app is not None else None
+        name = (p or {}).get("theme", fallback)
+    except Exception:
+        name = fallback
+    return THEMES.get(name, THEMES[fallback])
 
 
 # ================================================================== 悬浮窗
@@ -35,10 +61,10 @@ class Popup:
         self.closed = False
         self._close_job = None
 
-        p = app.cfg.get("popup")
+        p = app.cfg.get("popup") or {}
         self.theme_name = p.get("theme", "dark")
-        th = THEMES.get(self.theme_name, THEMES["dark"])
-        self.th = th
+        # v1.6.9 ⑥：统一走 current_theme()（含主题名非法回退）
+        self.th = th = current_theme(app)
         self.max_w = int(p.get("max_width", 520))
         self.alpha = float(p.get("alpha", 0.97))
         self.auto_hide = int(p.get("auto_hide_ms", 0) or 0)
@@ -250,8 +276,8 @@ class MiniButton:
         self.text = text
         self.closed = False
         self._hide_job = None
-        th = THEMES.get(app.cfg.get("popup.theme", "dark"), THEMES["dark"])
-        self.th = th
+        # v1.6.9 ⑥：统一走 current_theme()（原先自己读 popup.theme 平铺键）
+        self.th = th = current_theme(app)
 
         win = tk.Toplevel(app.root)
         self.win = win
@@ -409,9 +435,13 @@ class RegionSelector(tk.Toplevel):
         cv = tk.Canvas(self, bg="black", highlightthickness=0,
                        cursor="crosshair")
         cv.pack(fill="both", expand=True)
+        # v1.6.9 ⑥：遮罩恒为半透明黑（截图要压暗屏幕内容），提示文字只能用
+        # 浅色的 on_mask，绝不能跟 fg 走 —— light 主题的 fg 是深色，写在
+        # 黑遮罩上根本看不见。
+        th = current_theme(app)
         cv.create_text(sw // 2, 46,
                        text=title,
-                       fill="#e8f0ff", font=("Microsoft YaHei UI", 12))
+                       fill=th["on_mask"], font=("Microsoft YaHei UI", 12))
         self.cv = cv
         self._rect = None
         self._sx = self._sy = 0
@@ -518,17 +548,22 @@ class PinWindow:
         self._img_orig = _bmp_to_photo(bmp_bytes)   # 1:1 原图（缩放基准）
         self._factor = 1
 
+        # v1.6.9 ⑥：统一经 current_theme() 取色，不再写死 THEMES["dark"]
+        self.th = current_theme(app)
+        th = self.th
+
         win = tk.Toplevel(app.root)
         self.win = win
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.98)
-        win.configure(bg=THEMES["dark"]["border"], cursor="arrow")
+        win.configure(bg=th["border"], cursor="arrow")
 
-        outer = tk.Frame(win, bg=THEMES["dark"]["border"])
+        outer = tk.Frame(win, bg=th["border"])
         outer.pack(fill="both", expand=True)
+        self._outer = outer
         self._build_bar(outer)
-        self.cv = tk.Canvas(outer, bg="#1c212b", highlightthickness=0,
+        self.cv = tk.Canvas(outer, bg=th["canvas"], highlightthickness=0,
                             cursor="fleur")
         self.cv.pack(fill="both", expand=True)
 
@@ -541,27 +576,55 @@ class PinWindow:
 
     # ------------------------------------------------------------ 构建
     def _build_bar(self, parent):
-        bar = tk.Frame(parent, bg=THEMES["dark"]["card"])
+        th = self.th                      # v1.6.9 ⑥
+        bar = tk.Frame(parent, bg=th["card"])
         bar.pack(fill="x")
+        self._bar = bar
         self.lbl_title = tk.Label(
             bar, text=f"对照 {self.index} · 滚轮缩放 · Esc 关闭",
-            font=("Microsoft YaHei UI", 9), fg=THEMES["dark"]["sub"],
-            bg=THEMES["dark"]["card"])
+            font=("Microsoft YaHei UI", 9), fg=th["sub"],
+            bg=th["card"])
         self.lbl_title.pack(side="left", padx=8, pady=3)
         self.lbl_zoom = tk.Label(bar, text="100%", font=("Consolas", 9),
-                                 fg=THEMES["dark"]["accent"],
-                                 bg=THEMES["dark"]["card"])
+                                 fg=th["accent"],
+                                 bg=th["card"])
         self.lbl_zoom.pack(side="right", padx=6)
         b_save = tk.Label(bar, text=" 存 PNG ", font=("Microsoft YaHei UI", 9),
-                          fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
+                          fg=th["fg"], bg=th["card"],
                           cursor="hand2", padx=6)
         b_save.pack(side="right")
         b_save.bind("<Button-1>", lambda e=None: self._save_png())
         b = tk.Label(bar, text=" ✕ ", font=("Microsoft YaHei UI", 10),
-                     fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
+                     fg=th["fg"], bg=th["card"],
                      cursor="hand2", padx=6)
         b.pack(side="right")
         b.bind("<Button-1>", lambda e=None: self.close())
+        self._b_save, self._b_close = b_save, b   # refresh_theme 要改色
+
+    def refresh_theme(self):
+        """按当前配置重取主题并重刷本窗配色（v1.6.9 ⑥）。
+
+        改主题时已开着的对照窗要跟着变，否则得关掉重开才生效。窗口可能
+        正处于关闭流程中（widget 已销毁），故全程 try/except 兜住。
+        """
+        try:
+            if not self.win.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            th = current_theme(self.app)
+            self.th = th
+            self.win.configure(bg=th["border"])
+            self._outer.configure(bg=th["border"])
+            self.cv.configure(bg=th["canvas"])
+            self._bar.configure(bg=th["card"])
+            self.lbl_title.configure(fg=th["sub"], bg=th["card"])
+            self.lbl_zoom.configure(fg=th["accent"], bg=th["card"])
+            self._b_save.configure(fg=th["fg"], bg=th["card"])
+            self._b_close.configure(fg=th["fg"], bg=th["card"])
+        except Exception:
+            pass
 
     def _fit_size(self):
         """按落点显示器工作区 85% 上限取初始缩放倍数（只缩小，不放大）。
@@ -745,35 +808,40 @@ class NoteWindow:
         self.H = self._clamp(int(cfg.get("note_h", self.H)) if cfg else self.H,
                              self.MIN_H, self.MAX_H)
 
+        # v1.6.9 ⑥：统一经 current_theme() 取色，不再写死 THEMES["dark"]
+        self.th = current_theme(app)
+        th = self.th
+
         win = tk.Toplevel(app.root)
         self.win = win
         win.overrideredirect(True)
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.98)
-        win.configure(bg=THEMES["dark"]["border"], cursor="arrow")
+        win.configure(bg=th["border"], cursor="arrow")
 
-        outer = tk.Frame(win, bg=THEMES["dark"]["border"])
+        outer = tk.Frame(win, bg=th["border"])
         outer.pack(fill="both", expand=True)
-        top = tk.Frame(outer, bg=THEMES["dark"]["border"])
+        top = tk.Frame(outer, bg=th["border"])
         top.pack(fill="x")
+        self._outer, self._top = outer, top
         self._build_bar(top)
 
         self.txt = ScrolledText(
             outer, wrap="word", undo=True,
-            bg=THEMES["dark"]["card"], fg=THEMES["dark"]["fg"],
-            insertbackground=THEMES["dark"]["fg"],
+            bg=th["card"], fg=th["fg"],
+            insertbackground=th["fg"],
             relief="flat", bd=0, padx=8, pady=6,
             font=(FONT_CN, 10), spacing1=2, spacing3=2)
         self.txt.pack(fill="both", expand=True)
         self._build_search_bar(top)
         self.txt.tag_configure(self.HEAD_TAG,
-                               foreground=THEMES["dark"]["sub"],
+                               foreground=th["sub"],
                                font=(FONT_CN, 8))
 
         # 右下角 resize 手柄：无边框窗没有系统缩放边框，自己补一个。
         # place 叠在正文右下角（不占布局空间），便签类应用的惯例做法。
         grip = tk.Label(win, text="◢", font=(FONT_CN, 10),
-                        fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                        fg=th["sub"], bg=th["card"],
                         cursor="bottom_right_corner")
         grip.place(relx=1.0, rely=1.0, anchor="se")
         grip.bind("<ButtonPress-1>", self._rs_start)
@@ -802,25 +870,28 @@ class NoteWindow:
 
     # ------------------------------------------------------------ 构建
     def _build_bar(self, parent):
+        th = self.th                      # v1.6.9 ⑥
         # 从右往左 pack，所以列表顺序是「最右的先写」
-        bar = tk.Frame(parent, bg=THEMES["dark"]["card"])
+        bar = tk.Frame(parent, bg=th["card"])
         bar.pack(fill="x")
         self._bar = bar
         self.lbl = tk.Label(bar, text="便签 · Esc 关闭", font=(FONT_CN, 9),
-                            fg=THEMES["dark"]["sub"],
-                            bg=THEMES["dark"]["card"])
+                            fg=th["sub"],
+                            bg=th["card"])
         self.lbl.pack(side="left", padx=8, pady=3)
+        self._bar_btns = []               # refresh_theme 要逐个改色
         for txt, cmd in ((" ✕ ", self.close), (" 清空 ", self._clear),
                          (" 存 txt ", self._save_txt),
                          (" 复制 ", self._copy_all),
                          (" 搜索 ", self._toggle_search)):
             b = tk.Label(bar, text=txt, font=(FONT_CN, 9),
-                         fg=THEMES["dark"]["fg"], bg=THEMES["dark"]["card"],
+                         fg=th["fg"], bg=th["card"],
                          cursor="hand2", padx=4)
             b.pack(side="right")
             # v1.6.4 铁律：Tk 回调必须容忍无参调用（widget 销毁竞态中 Tk 可能
             # 不带 event 调用绑定回调，`lambda e:` 会抛 TypeError 打断主循环）
             b.bind("<Button-1>", lambda e=None, c=cmd: c())
+            self._bar_btns.append(b)
 
     def append(self, text, source=""):
         """追加一条片段。段头 = 序号 + 时间 + 来源窗口标题（灰色小字）。"""
@@ -861,41 +932,44 @@ class NoteWindow:
 
         搜索条挂在 top 容器里（bar 之下、正文之上），默认 pack_forget 隐藏。
         """
-        sb = tk.Frame(parent, bg=THEMES["dark"]["card"])
+        th = self.th                      # v1.6.9 ⑥
+        sb = tk.Frame(parent, bg=th["card"])
         self._search_bar = sb
         self._search_matches = []
         self._search_idx = 0
         self._search_open = False
 
         ent = tk.Entry(sb, font=(FONT_CN, 10),
-                       bg=THEMES["dark"]["border"], fg=THEMES["dark"]["fg"],
-                       insertbackground=THEMES["dark"]["fg"],
+                       bg=th["border"], fg=th["fg"],
+                       insertbackground=th["fg"],
                        relief="flat", bd=0,
                        highlightthickness=1,
-                       highlightcolor=THEMES["dark"]["accent"])
+                       highlightcolor=th["accent"])
         ent.pack(side="left", fill="x", expand=True, padx=6, pady=4)
         self._search_entry = ent
 
         lbl = tk.Label(sb, text="0/0", font=(FONT_CN, 9),
-                       fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"])
+                       fg=th["sub"], bg=th["card"])
         lbl.pack(side="right", padx=(0, 4))
         self._search_label = lbl
 
         nxt = tk.Label(sb, text=" ▾ ", font=(FONT_CN, 9),
-                       fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                       fg=th["sub"], bg=th["card"],
                        cursor="hand2")
         nxt.pack(side="right")
         nxt.bind("<Button-1>", lambda e=None: self._search_next())
         prv = tk.Label(sb, text=" ▴ ", font=(FONT_CN, 9),
-                       fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                       fg=th["sub"], bg=th["card"],
                        cursor="hand2")
         prv.pack(side="right")
         prv.bind("<Button-1>", lambda e=None: self._search_prev())
         close = tk.Label(sb, text=" ✕ ", font=(FONT_CN, 9),
-                         fg=THEMES["dark"]["sub"], bg=THEMES["dark"]["card"],
+                         fg=th["sub"], bg=th["card"],
                          cursor="hand2")
         close.pack(side="right", padx=(4, 2))
         close.bind("<Button-1>", lambda e=None: self._toggle_search(force=False))
+        self._search_next_btn, self._search_prev_btn = nxt, prv
+        self._search_close_btn = close
 
         # 输入框事件：每次按键实时搜；Enter/Shift+Enter 前后跳；Esc 关搜索条
         ent.bind("<KeyRelease>", self._do_search)
@@ -904,12 +978,53 @@ class NoteWindow:
         ent.bind("<Escape>", lambda e=None: self._toggle_search(force=False))
         sb.pack_forget()
 
-        # 高亮 tag：全部命中（蓝底）+ 当前命中（金底，更醒目）
+        # 高亮 tag：全部命中（accent 底）+ 当前命中（金底，更醒目）。
+        # on_accent 随主题走（亮蓝底配深字 / 中蓝底配白字）；search_cur 是
+        # 金色强调底，两个主题都配深字，故不随主题。
         self.txt.tag_configure("search_hit",
-                               background=THEMES["dark"]["accent"],
-                               foreground="#0b1220")
+                               background=th["accent"],
+                               foreground=th["on_accent"])
         self.txt.tag_configure("search_cur",
                                background="#ffd166", foreground="#0b1220")
+
+    def refresh_theme(self):
+        """按当前配置重取主题并重刷本窗配色（v1.6.9 ⑥）。
+
+        便签是长期开着的窗口，改主题后必须立刻跟着变，否则得关掉重开才
+        生效。窗口可能正处于关闭流程中（widget 已销毁），故全程 try/except
+        兜住——主题只影响外观，绝不能把窗口搞崩。
+        """
+        try:
+            if not self.win.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            th = current_theme(self.app)
+            self.th = th
+            self.win.configure(bg=th["border"])
+            self._outer.configure(bg=th["border"])
+            self._top.configure(bg=th["border"])
+            self._bar.configure(bg=th["card"])
+            self.lbl.configure(fg=th["sub"], bg=th["card"])
+            for b in self._bar_btns:
+                b.configure(fg=th["fg"], bg=th["card"])
+            self.txt.configure(bg=th["card"], fg=th["fg"],
+                               insertbackground=th["fg"])
+            self.txt.tag_configure(self.HEAD_TAG, foreground=th["sub"])
+            self._grip.configure(fg=th["sub"], bg=th["card"])
+            self._search_bar.configure(bg=th["card"])
+            self._search_entry.configure(bg=th["border"], fg=th["fg"],
+                                         insertbackground=th["fg"],
+                                         highlightcolor=th["accent"])
+            self._search_label.configure(fg=th["sub"], bg=th["card"])
+            for w in (self._search_next_btn, self._search_prev_btn,
+                      self._search_close_btn):
+                w.configure(fg=th["sub"], bg=th["card"])
+            self.txt.tag_configure("search_hit", background=th["accent"],
+                                   foreground=th["on_accent"])
+        except Exception:
+            pass
 
     def _toggle_search(self, force=None):
         """点击『搜索』切换搜索条；force=False 强制收起（关闭按钮 / Esc）。
@@ -1211,10 +1326,12 @@ class Settings(tk.Toplevel):
         super().__init__(app.root)
         self.app = app
         self.cfg = app.cfg
+        # v1.6.9 ⑥：设置窗口跟随主题（原先整窗写死浅色 #f5f7fa）
+        self.th = current_theme(app)
         self.title("QuickTool 设置")
         self.geometry("680x620")
         self.resizable(True, True)
-        self.configure(bg="#f5f7fa")
+        self.configure(bg=self.th["win"])
         # 注意：不要对隐藏的 root 调 transient()！实测 Tk 会让子窗口继承父窗口
         # 的 withdrawn 状态，且立即 deiconify 也无效，导致设置窗口创建后不可见、
         # 用户以为"点设置没反应"。独立 Toplevel 正常显示在任务栏，反而更直观。
@@ -1232,26 +1349,17 @@ class Settings(tk.Toplevel):
 
     # ------------------------------------------------------------ 构建
     def _build(self):
-        style = ttk.Style(self)
-        for f in ("Microsoft YaHei UI", "Microsoft YaHei"):
-            try:
-                tkfont.Font(family=f, size=9).actual()
-                F = f
-                break
-            except Exception:
-                F = "System"
-        style.configure("TLabel", font=(F, 9))
-        style.configure("TButton", font=(F, 9))
-        style.configure("TLabelframe.Label", font=(F, 9, "bold"))
+        self._apply_ttk_theme(ttk.Style(self))
 
-        wrap = tk.Frame(self, bg="#f5f7fa")
+        th = self.th
+        wrap = tk.Frame(self, bg=th["win"])
         wrap.pack(fill="both", expand=True)
-        canvas = tk.Canvas(wrap, bg="#f5f7fa", highlightthickness=0)
+        canvas = tk.Canvas(wrap, bg=th["win"], highlightthickness=0)
         sb = ttk.Scrollbar(wrap, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        inner = tk.Frame(canvas, bg="#f5f7fa")
+        inner = tk.Frame(canvas, bg=th["win"])
         inner_id = canvas.create_window((0, 0), window=inner, anchor="nw")
         inner.bind("<Configure>",
                    lambda e=None: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -1272,6 +1380,77 @@ class Settings(tk.Toplevel):
         self._section_ui(inner)
         self._section_footer(inner)
 
+    def _apply_ttk_theme(self, style):
+        """把 ttk 控件刷成当前主题色（v1.6.9 ⑥）。
+
+        Windows 默认主题（vista / xpnative）由系统绘制，**不接受自定义背景
+        色**——要跟随主题只能切到完全可定制的 clam。代价是控件变成扁平的
+        跨平台风格，这是「跟随主题」的必要交换。
+
+        ttk 改 style 后所有已存在的控件会自动跟随，所以切换主题时只需重跑
+        一次本方法，不必逐个控件改色（原生 tk widget 没这机制，见
+        _refresh_theme 的递归重刷）。
+        """
+        th = self.th
+        # 必须最先做：切主题会清空此前所有 configure
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        F = "System"
+        for f in ("Microsoft YaHei UI", "Microsoft YaHei"):
+            try:
+                tkfont.Font(family=f, size=9).actual()
+                F = f
+                break
+            except Exception:
+                continue
+
+        style.configure("TLabel", font=(F, 9),
+                        background=th["win"], foreground=th["fg"])
+        style.configure("TButton", font=(F, 9), background=th["hover"],
+                        foreground=th["fg"], bordercolor=th["border"],
+                        lightcolor=th["card"], darkcolor=th["border"])
+        style.map("TButton",
+                  background=[("active", th["accent"]),
+                              ("pressed", th["accent"])],
+                  foreground=[("active", th["on_accent"])])
+        style.configure("TLabelframe", background=th["win"],
+                        bordercolor=th["border"])
+        style.configure("TLabelframe.Label", font=(F, 9, "bold"),
+                        background=th["win"], foreground=th["accent"])
+        style.configure("TEntry", fieldbackground=th["card"],
+                        foreground=th["fg"], insertcolor=th["fg"],
+                        bordercolor=th["border"], lightcolor=th["card"],
+                        darkcolor=th["border"])
+        style.configure("TCombobox", fieldbackground=th["card"],
+                        background=th["card"], foreground=th["fg"],
+                        arrowcolor=th["fg"], bordercolor=th["border"],
+                        lightcolor=th["card"], darkcolor=th["border"])
+        style.configure("TCheckbutton", background=th["win"],
+                        foreground=th["fg"], indicatorcolor=th["card"],
+                        bordercolor=th["border"])
+        style.map("TCheckbutton",
+                  background=[("active", th["win"])],
+                  indicatorcolor=[("selected", th["accent"])])
+        style.configure("TScale", background=th["win"],
+                        troughcolor=th["hover"], bordercolor=th["border"],
+                        lightcolor=th["accent"], darkcolor=th["accent"])
+        style.configure("TScrollbar", background=th["hover"],
+                        troughcolor=th["win"], bordercolor=th["border"],
+                        arrowcolor=th["fg"])
+        # Combobox 的下拉列表是原生 Listbox，ttk style 管不到，只能 option_add
+        # （否则 dark 主题下会弹出一个刺眼的白列表）
+        try:
+            self.option_add("*TCombobox*Listbox.background", th["card"])
+            self.option_add("*TCombobox*Listbox.foreground", th["fg"])
+            self.option_add("*TCombobox*Listbox.selectBackground", th["accent"])
+            self.option_add("*TCombobox*Listbox.selectForeground",
+                            th["on_accent"])
+        except Exception:
+            pass
+
     def _frame(self, parent, title):
         lf = ttk.LabelFrame(parent, text=" " + title + " ", padding=10)
         lf.pack(fill="x", padx=12, pady=6)
@@ -1284,9 +1463,9 @@ class Settings(tk.Toplevel):
         # 与 widget（left）交错 pack，空洞逐行右移：每行被上一行的 Entry 推右
         # 一个 Entry 宽度，整个内容区被撑到 ~2000px 宽，热键区只能看到前两行
         # 且全部错位（用户报"只有划词翻译和截图翻译俩个 + 显示 bug"）。
-        r = tk.Frame(parent, bg=parent.cget("bg") if "bg" in parent.keys() else "#f5f7fa")
+        r = tk.Frame(parent, bg=parent.cget("bg") if "bg" in parent.keys() else self.th["win"])
         r.pack(fill="x", pady=3)
-        tk.Label(r, text=label, width=12, anchor="w", bg="#f5f7fa",
+        tk.Label(r, text=label, width=12, anchor="w", bg=self.th["win"],
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
         widget.pack(in_=r, side="left", fill="x", expand=True)
         # in_ 只改几何归属，不改 z-order：widget 创建早于 r（二者是兄弟窗口），
@@ -1295,7 +1474,7 @@ class Settings(tk.Toplevel):
         # 最底层，让 widget 露出来。
         r.lower()
         if hint:
-            tk.Label(r, text=hint, fg="#8a94a6", bg="#f5f7fa",
+            tk.Label(r, text=hint, fg=self.th["sub"], bg=self.th["win"],
                      font=("Microsoft YaHei UI", 8)).pack(in_=r, side="left", padx=6)
 
     # ------------------------------------------------------------ 引擎
@@ -1307,13 +1486,13 @@ class Settings(tk.Toplevel):
             f, textvariable=self.engine_var, values=[n for n, _ in names],
             state="readonly", width=14))
         tk.Label(f, text=" · ".join(f"{n}={lab}" for n, lab in names),
-                 fg="#8a94a6", bg="#f5f7fa", wraplength=500, justify="left",
+                 fg=self.th["sub"], bg=self.th["win"], wraplength=500, justify="left",
                  font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(2, 6))
 
         self.fb_vars = {}
-        fb = tk.Frame(f, bg="#f5f7fa")
+        fb = tk.Frame(f, bg=self.th["win"])
         fb.pack(fill="x")
-        tk.Label(fb, text="失败回退", width=12, anchor="w", bg="#f5f7fa",
+        tk.Label(fb, text="失败回退", width=12, anchor="w", bg=self.th["win"],
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
         chain = set(self.cfg.get("fallback_chain") or [])
         for name, _ in names:
@@ -1326,10 +1505,10 @@ class Settings(tk.Toplevel):
             f, textvariable=self.tgt_var, state="readonly", width=14,
             values=[c for c, _ in self.LANGS]))
 
-        btns = tk.Frame(f, bg="#f5f7fa")
+        btns = tk.Frame(f, bg=self.th["win"])
         btns.pack(fill="x", pady=(6, 0))
         ttk.Button(btns, text="测试当前引擎", command=self._test).pack(side="left")
-        self.test_out = tk.Label(btns, text="", fg="#2563eb", bg="#f5f7fa",
+        self.test_out = tk.Label(btns, text="", fg=self.th["accent"], bg=self.th["win"],
                                  font=("Microsoft YaHei UI", 8), wraplength=380,
                                  justify="left")
         self.test_out.pack(side="left", padx=8)
@@ -1350,7 +1529,7 @@ class Settings(tk.Toplevel):
             self._row(f, label, e)
             e.bind("<KeyPress>", lambda ev=None, v=var: self._capture(ev, v))
         tk.Label(f, text="注意：录制时全局热键也会同时触发一次，属正常现象。",
-                 fg="#8a94a6", bg="#f5f7fa",
+                 fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(anchor="w")
 
     def _capture(self, event=None, var=None):
@@ -1389,9 +1568,9 @@ class Settings(tk.Toplevel):
             self.llm_vars[key] = v
             self._row(f, label, ttk.Entry(f, textvariable=v, width=width,
                                           show="*" if key == "api_key" else ""))
-        presets = tk.Frame(f, bg="#f5f7fa")
+        presets = tk.Frame(f, bg=self.th["win"])
         presets.pack(fill="x", pady=2)
-        tk.Label(presets, text="预设", width=12, anchor="w", bg="#f5f7fa",
+        tk.Label(presets, text="预设", width=12, anchor="w", bg=self.th["win"],
                  font=("Microsoft YaHei UI", 9)).pack(side="left")
         for name, url, model in (
                 ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
@@ -1458,14 +1637,14 @@ class Settings(tk.Toplevel):
 
     # ------------------------------------------------------------ 底部
     def _section_footer(self, root):
-        f = tk.Frame(root, bg="#f5f7fa")
+        f = tk.Frame(root, bg=self.th["win"])
         f.pack(fill="x", padx=12, pady=12)
         ttk.Button(f, text="保存并应用", command=self._save).pack(side="left")
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.8 · 零第三方依赖",
-                 fg="#a0a8b8", bg="#f5f7fa",
+        tk.Label(f, text="QuickTool v1.6.9 · 零第三方依赖",
+                 fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
     # ------------------------------------------------------------ 保存
@@ -1502,11 +1681,76 @@ class Settings(tk.Toplevel):
         ok, err = cfg.apply_autostart(self.autostart.get())
         self.app.reload_hotkeys()
         self.app.toggle_tray(self.tray.get())
+        self._apply_theme_change()      # v1.6.9 ⑥：主题改了立刻生效
         self._msg("已保存" if ok else f"已保存，但开机自启设置失败：{err}")
 
     def _msg(self, text, error=False):
         if hasattr(self, "test_out") and self.test_out.winfo_exists():
-            self.test_out.configure(text=text, fg="#e0483c" if error else "#2563eb")
+            self.test_out.configure(text=text,
+                                     fg=self.th["danger"] if error
+                                     else self.th["accent"])
+
+    # ------------------------------------------------------------ 换肤
+    def _apply_theme_change(self):
+        """保存后若主题变了，就地重刷设置窗 + 给已开窗口换肤（v1.6.9 ⑥）。
+
+        current_theme() 返回的是 THEMES 里的同一个字典对象，所以 `is` 判断
+        就是最可靠的"主题有没有变"检测——没变直接返回，省掉一次全窗遍历。
+        换肤失败绝不能影响"已保存"这个结果，故整体 try/except 兜住。
+        """
+        try:
+            new_th = current_theme(self.app)
+            if new_th is self.th:
+                return
+            old, self.th = self.th, new_th
+            self.configure(bg=new_th["win"])
+            self._apply_ttk_theme(ttk.Style(self))
+            # 原生 tk widget 没有 style 机制，只能按「旧主题色 -> 新主题色」
+            # 的映射递归重刷。建窗时颜色全部取自主题表，故映射是完备的。
+            cmap = {old[k]: new_th[k] for k in ("win", "card", "border")}
+            fmap = {old[k]: new_th[k] for k in ("fg", "sub", "accent", "danger")}
+            self._recolor(self, cmap, fmap)
+            for w in self._themed_windows():
+                w.refresh_theme()
+        except Exception:
+            pass
+
+    @classmethod
+    def _recolor(cls, w, cmap, fmap):
+        """递归把 widget 树里命中旧主题色的 bg / fg 换成新色。
+
+        ttk 控件的颜色由 style 管，cget 读不到这些值，自然不会命中映射表，
+        所以这里只影响原生 tk widget —— 不需要区分控件类型。
+        """
+        try:
+            keys = w.keys()
+        except Exception:
+            return
+        for opt, mapping in (("bg", cmap), ("fg", fmap)):
+            if opt in keys:
+                try:
+                    cur = str(w.cget(opt))
+                    if cur in mapping:
+                        w.configure(**{opt: mapping[cur]})
+                except Exception:
+                    pass
+        try:
+            for child in w.winfo_children():
+                cls._recolor(child, cmap, fmap)
+        except Exception:
+            pass
+
+    def _themed_windows(self):
+        """当前还开着的、支持换肤的窗口（便签 + 所有截图对照窗）。"""
+        app = self.app
+        wins = []
+        note = getattr(app, "note_win", None)
+        if note is not None and not getattr(note, "closed", False):
+            wins.append(note)
+        for w in (getattr(app, "pin_wins", None) or []):
+            if w is not None and not getattr(w, "closed", False):
+                wins.append(w)
+        return wins
 
     def _test(self):
         self._save()
