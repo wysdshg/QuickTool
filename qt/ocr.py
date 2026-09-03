@@ -19,6 +19,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 
 _POWERSHELL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                            "System32", "windowspowershell", "v1.0",
@@ -99,6 +100,11 @@ def _ensure_script():
 
 
 _LANGS_CACHE = None                      # 进程级缓存：语言包运行中不会变
+# v1.6.7 ③（P1 ③ 收尾）：_LANGS_CACHE 会被多个线程并发首写——JobWorker
+# （OCR 前探测语言）与主线程（--selftest）可能同时首次调用 available_langs，
+# 无锁会让两边都起 PowerShell 子进程（结果收敛但白跑一次）。double-check 锁：
+# 命中缓存走无锁快路径，只有未命中才进锁内探测。
+_LANGS_LOCK = threading.Lock()
 
 
 def available_langs(timeout=20):
@@ -110,12 +116,15 @@ def available_langs(timeout=20):
     global _LANGS_CACHE
     if _LANGS_CACHE is not None:
         return _LANGS_CACHE
-    try:
-        p = _run_ps(["-Command", _PS_LANGS], timeout)
-        tags = p.stdout.decode("utf-8", "replace").split()
-        _LANGS_CACHE = [t for t in tags if "-" in t]
-    except Exception:
-        _LANGS_CACHE = []
+    with _LANGS_LOCK:
+        if _LANGS_CACHE is not None:     # double-check：别人已探测完
+            return _LANGS_CACHE
+        try:
+            p = _run_ps(["-Command", _PS_LANGS], timeout)
+            tags = p.stdout.decode("utf-8", "replace").split()
+            _LANGS_CACHE = [t for t in tags if "-" in t]
+        except Exception:
+            _LANGS_CACHE = []
     return _LANGS_CACHE
 
 

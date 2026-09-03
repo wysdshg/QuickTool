@@ -913,6 +913,12 @@ class MouseDragWatcher:
         self._down = None                        # (x, y) 按下位置
         self._dblclk = None                      # (x, y) 双击按下位置（双击选词）
         self._last_fire = 0.0
+        # v1.6.7 ③（P1 ③ 收尾）：跨线程字段——写=主线程（main._sync_drag_ignore，
+        # 迷你按钮显示/隐藏时更新），读=本钩子线程（_inside_ignore，低层钩子热
+        # 路径）。安全论证：值恒为 None 或四元组，CPython 属性赋值/读取在 GIL
+        # 下原子，读者只见旧值或完整新值，绝不半写；更新时机在 MiniButton 创建
+        # 之后，用户点击按钮必然晚于写操作几十 ms，读到的已是新矩形。故不加锁
+        # （钩子热路径零锁优先），依赖 GIL + 写入时机即可。
         self.ignore_rect = None                  # (left, top, right, bottom)
 
     def start(self):

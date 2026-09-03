@@ -9,6 +9,10 @@ QuickTool —— 极简 Windows 效率工具集（划词翻译 / 截图 OCR / �
     CaptureWorker   抓词（模拟 Ctrl+C + 等剪贴板，最坏 ~0.7s）
     JobWorker       慢任务：联网翻译 / 截图 OCR（秒级）
 
+跨线程状态纪律：共享可变属性必须消除或用队列/消息建立 happens-before——
+翻译文本、OCR 图片路径、便签来源标题一律放进队列 payload 随事件流动
+（v1.6.7 ③ 审计修复），不再「一个属性多个线程随手读写」。
+
 为什么要把重活从 Win32Thread 挪走：它同时是 WH_MOUSE_LL 鼠标钩子的宿主
 线程，低层钩子回调靠这个线程的消息泵驱动。一旦被同步阻塞，系统派发鼠标
 消息就会变慢，表现为「拖选一下鼠标卡一下」——尤其是没选中内容时，抓词要
@@ -51,12 +55,12 @@ from qt.translator import Translator
 from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 
-APP_VERSION = "1.6.6"
+APP_VERSION = "1.6.7"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
-WM_APP_MINI_TRANSLATE = wa.WM_APP + 4      # 迷你按钮点击 -> Win32 线程翻译
-WM_APP_OCR_RUN = wa.WM_APP + 6             # 截图选区完成 -> Win32 线程 OCR+翻译
+# 注：WM_APP+4/+6 曾是「迷你按钮翻译 / OCR 运行」的 Win32 线程中转消息，
+# v1.6.7 ③ 已改为直接入 job_q（文本/图片路径随 payload 走），故删除。
 
 # 各功能键被占用时的自动顺延列表（本机 Ctrl+Alt+T/S 常被输入法/网盘占用）。
 # 注意：必须用 HK_* 整数做键——_register_hotkeys 传的是 hid（int），
@@ -105,13 +109,21 @@ class App:
         self.settings = None
         self.mini_btn = None
         self.drag = None                # 鼠标拖选钩子（Win32 线程）
-        self._mini_pending = ""         # 迷你按钮点击后待翻译的文本
-        self.ocr_selector = None        # 截图框选遮罩（主线程）
+        # ---- 跨线程状态（v1.6.7 ③ 审计后剩余项 + 归属注释）----
+        # _selecting：写=主线程（open_ocr/open_pin 及选区回调 finally），
+        #   读=Win32 拖选守卫。GIL 下读的是连贯快照；时序靠选区回调的
+        #   finally 复位与 WM_APP_DRAG_END 消息配对（见 v1.5.3 竞态修复）。
         self._selecting = False         # 截图选区流程进行中/刚结束（防钩子抢拖拽）
-        self._ocr_img = None            # 抓屏 BMP 临时文件路径
+        # _last_source：单写者=Win32 线程（热键/托盘 Note 按下瞬间抓前台标题）；
+        #   读=CaptureWorker._capture_for_note——写后经 q("note")->主线程->
+        #   cap_q 整链入队，队列同步保证读者必见最新值。拖选路径不再读它：
+        #   来源标题随 drag 请求 payload 直达迷你按钮（见 _handle_drag_end）。
+        self._last_source = ""          # 便签段头显示来源（Note 触发时记录）
+        # _mini_source：迷你按钮携带的来源（主线程专属，无跨线程读写）
+        self._mini_source = ""          # 最近一次 mini_show 的来源窗口标题
+        self.ocr_selector = None        # 截图框选遮罩（主线程）
         self.pin_wins = []              # 截图对照小窗列表（可多个并存）
         self.note_win = None            # 置顶便签（单窗口累积，不并存多个）
-        self._last_source = ""          # 便签段头显示来源（热键/拖选触发时记录）
         # 后台 worker 队列：重活一律不放进 Win32 消息循环线程（见 _capture_worker）
         self._cap_q = queue.Queue()     # 抓词（模拟 Ctrl+C + 等剪贴板）
         self._cap_lock = threading.Lock()   # 非阻塞 acquire 当作"进行中"标志
@@ -120,6 +132,9 @@ class App:
         self.hwnd = None
         self.tray = None
         self._taskbar_created = 0    # explorer 重启广播消息号（_win_thread 里注册）
+        # _shutting_down：写=主线程（quit 入口置位后永不复位）；读=Win32 线程
+        #   （_handle_drag_end/_do_translate 退出尾部守卫，v1.6.7 ③）。跨线程读
+        #   原子 bool，GIL 下安全；只读一次不构成判断窗口。
         self._shutting_down = False
 
     # ============================================================ 启动
@@ -321,6 +336,11 @@ class App:
 
         这里绝不能同步抓词——本线程是鼠标钩子的宿主，卡住就等于卡鼠标。
         """
+        # v1.6.7 ③（P1 ③ 收尾）：退出尾部守卫——quit 已开始（主线程置
+        # _shutting_down 后关闭各窗）时，消息队列里排着的拖选/热键消息不应
+        # 再触发抓词。跨线程读原子 bool，GIL 下安全（见 _shutting_down 归属）。
+        if self._shutting_down:
+            return
         if self._selecting:                  # 截图选区进行中/刚结束：钩子别抢
             return
         if self.ocr_selector:                    # 截图框选拖动不是划词，别抢
@@ -345,11 +365,12 @@ class App:
             ls.get_logger().info("DRAG-SKIP reason=%s down=(%s,%s)", reason, x0, y0)
             return
         # 此刻前台仍是用户正在读的那个窗口（刚松开鼠标），记下标题当来源。
-        # 与热键 Ctrl+Alt+N 路径一致。放在消息循环线程而非钩子回调里。
+        # v1.6.7 ③：标题随 drag 请求 payload 流动（cap_q -> mini_show），
+        # 便签归属绑定在本次拖选事件上；不再写共享 _last_source 等主线程
+        # mini_note 稍后自行读取——那会被更晚的热键来源写覆盖（错标段头）。
         hwnd = wa.get_foreground_window()
-        if hwnd:
-            self._last_source = wa.get_window_title(hwnd)
-        self._request_capture("drag", (x1, y1))
+        title = wa.get_window_title(hwnd) if hwnd else ""
+        self._request_capture("drag", (x1, y1, title))
 
     # ============================================================ 后台 worker
     # 为什么需要这两个 worker：
@@ -388,7 +409,7 @@ class App:
                 self._cap_lock.release()
 
     def _capture_for_drag(self, pt):
-        x, y = pt or (0, 0)
+        x, y, src = pt or (0, 0, "")
         # 首轮 0.25s 快速失败：多数程序复制是瞬时的，没选中内容时尽早收手
         text = get_selected_text(first_timeout=0.25)
         ls.get_logger().info("CAPTURE-DONE kind=drag len=%s", len(text or ""))
@@ -396,7 +417,7 @@ class App:
             return
         if len(text) > int(self.cfg.get("mini_button_maxlen", 200)):
             return
-        self.q.put(("mini_show", (x, y, text)))
+        self.q.put(("mini_show", (x, y, text, src)))
 
     def _capture_for_hotkey(self):
         text = get_selected_text(first_timeout=0.25)
@@ -427,7 +448,7 @@ class App:
                 if kind == "translate":
                     self._do_translate_job(payload)
                 elif kind == "ocr":
-                    self._run_ocr()
+                    self._run_ocr(payload)
             except Exception:
                 ls.log_exc(f"JOB-ERROR kind={kind}")
                 traceback.print_exc()
@@ -577,9 +598,6 @@ class App:
         if msg == WM_APP_TRAY_TOGGLE:
             self._tray_add() if wparam else self._tray_remove()
             return True
-        if msg == WM_APP_OCR_RUN:
-            self._job_q.put(("ocr", None))      # PowerShell OCR 1~3s，别堵钩子线程
-            return True
         if msg == wa.WM_HOTKEY:
             if wparam == HK_TRANSLATE:
                 self._do_translate()
@@ -600,9 +618,6 @@ class App:
             return True
         if msg == wa.WM_APP_DRAG_END:
             self._handle_drag_end()
-            return True
-        if msg == WM_APP_MINI_TRANSLATE:
-            self._translate_text(self._mini_pending)
             return True
         if msg == wa.WM_APP_TRAY:
             # lParam 低 16 位是鼠标事件，高 16 位是图标 ID（Tray.uID=1），
@@ -629,6 +644,8 @@ class App:
 
     def _do_translate(self):
         """热键路径（Win32 线程）：只做判断与投递，绝不同步抓词。"""
+        if self._shutting_down:              # v1.6.7 ③：退出尾部热键不再响应
+            return
         if self.popup_open:                      # 再按一次热键 = 关闭悬浮窗
             self.q.put(("close_popup", None))
             return
@@ -708,8 +725,8 @@ class App:
             ok, text, err = payload
             self._handle_ocr_result(ok, text, err)
         elif kind == "mini_show":
-            x, y, text = payload
-            self._show_mini_button(x, y, text)
+            x, y, text, src = payload
+            self._show_mini_button(x, y, text, src)
         elif kind == "mini_hide":
             self._hide_mini_button()
         elif kind == "quit":
@@ -729,11 +746,12 @@ class App:
         e2e_log(f"POPUP_SHOWN:{engine}")
 
     # ------------------------------------------------------------ 迷你按钮
-    def _show_mini_button(self, x, y, text):
+    def _show_mini_button(self, x, y, text, source=""):
         if self.popup_open:
             return
         self._hide_mini_button()
         self.mini_btn = MiniButton(self, x, y, text)
+        self._mini_source = source or ""    # 主线程专属：随按钮携带的来源
         self._sync_drag_ignore()
 
     def _hide_mini_button(self):
@@ -754,25 +772,28 @@ class App:
             self.drag.ignore_rect = rect
 
     def mini_translate(self, text):
-        """迷你按钮点击（主线程调用）：把文本交给 Win32 线程翻译，不阻塞 UI。"""
+        """迷你按钮『译』点击（主线程调用）：翻译文本直接入 job 队列。"""
         self._hide_mini_button()
         if not (text or "").strip():
             return
         if self.popup_open:
             self.popup.close()
-        self._mini_pending = text
-        wa.post_message(self.hwnd, WM_APP_MINI_TRANSLATE)
+        # v1.6.7 ③：不再写 _mini_pending 再经 WM_APP_MINI_TRANSLATE 投给
+        # Win32 线程读——_translate_text 本就是「任何线程只入队」，主线程
+        # 直调即可；旧写法在连续两次点击/OCR 完成时会互相覆盖待译文本。
+        self._translate_text(text)
 
     def mini_note(self, text):
         """迷你按钮『便』点击（主线程）：把文字钉进置顶便签。
 
         等价于按 Ctrl+Alt+N，区别只是文字在拖选结束时已经抓好了，不必再走
-        一次「模拟 Ctrl+C + 等剪贴板」。来源窗口在 _handle_drag_end 就记下。
+        一次「模拟 Ctrl+C + 等剪贴板」。来源窗口标题在拖选时随 payload 到
+        mini_show（_mini_source，主线程专属），不再读跨线程的 _last_source。
         """
         self._hide_mini_button()
         if not (text or "").strip():
             return
-        self.open_note(text, self._last_source or "")
+        self.open_note(text, self._mini_source or "")
 
     # ------------------------------------------------------------ 截图翻译
     def open_ocr(self):
@@ -783,7 +804,7 @@ class App:
         self.ocr_selector = RegionSelector(self, self._ocr_region_selected)
 
     def _ocr_region_selected(self, x, y, w, h):
-        """选区完成（主线程）：立即 GDI 抓屏（毫秒级），交给 Win32 线程 OCR。"""
+        """选区完成（主线程）：立即 GDI 抓屏（毫秒级），OCR 交 JobWorker。"""
         try:
             self.ocr_selector = None
             try:
@@ -791,19 +812,21 @@ class App:
                 path = os.path.join(tempfile.gettempdir(), "QuickTool_ocr.bmp")
                 with open(path, "wb") as f:
                     f.write(data)
-                self._ocr_img = path
             except Exception as exc:
                 self.q.put(("toast", ("截图失败", str(exc))))
                 return
             self.q.put(("toast", ("QuickTool 截图", "正在识别文字…")))
-            wa.post_message(self.hwnd, WM_APP_OCR_RUN)
+            # v1.6.7 ③：图片路径随 job payload 直达 JobWorker（1~3s 的
+            # PowerShell OCR 不进主线程也不进钩子线程），不再经共享属性
+            # _ocr_img + WM_APP_OCR_RUN 中转——避免「旧 job 未开跑就被
+            # 下一次选区覆盖路径」的跨线程错拿。
+            self._job_q.put(("ocr", path))
         finally:
             # 同 _pin_region_selected：选区流程结束才放行钩子
             self._selecting = False
 
-    def _run_ocr(self):
-        """Win32 线程：PowerShell 子进程跑 OCR（约 1~3s，不碰 UI）。"""
-        img = self._ocr_img
+    def _run_ocr(self, img):
+        """JobWorker 线程：PowerShell 子进程跑 OCR（约 1~3s，不碰 UI）。"""
         if not img:
             return
         log = ls.get_logger()
@@ -834,9 +857,9 @@ class App:
             self.q.put(("toast", ("未识别到文字",
                                   "请框选包含清晰文字的区域，太小或太模糊会识别失败。")))
             return
-        # 复用迷你按钮翻译管线：文本交给 Win32 线程（loading → result）
-        self._mini_pending = text
-        wa.post_message(self.hwnd, WM_APP_MINI_TRANSLATE)
+        # v1.6.7 ③：OCR 文本直接入翻译队列（同 mini_translate 改动），
+        # 不再经共享属性 _mini_pending + WM_APP_MINI_TRANSLATE 中转。
+        self._translate_text(text)
 
     # ------------------------------------------------------------ 截图对照
     PIN_MAX = 5                      # 最多同时存在的对照窗数量

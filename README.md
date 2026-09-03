@@ -407,6 +407,11 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **修复**：拖选结束先用**按下点所在窗口**判定再决定是否抓词——`is_console_window`（conhost/Windows Terminal/mintty 类名+进程名）与 `is_overlay_window`（topmost+盖满屏的截图遮罩特征）命中即跳过并记 `DRAG-SKIP reason=console|overlay`。正常浏览器/编辑器拖选完全不受影响。热键 Ctrl+Q/Ctrl+Alt+N 路径本次未动。
 - 验证：smoke **140/140**（新增 6.13 节 11 项：控制台类名/进程名判定、遮罩几何判定、_handle_drag_end 集成不触发抓词）、e2e 14/14×2。
 
+**v1.6.7 跨线程状态审计 + Tk 回调健壮性**（2026-09-03）：
+- **跨线程共享状态改造（③ 队列化）**：迷你按钮待译文本、截图 OCR 图片路径、便签来源标题不再经共享属性 + Win32 消息中转，一律随队列 payload 直达后台线程（消除 `_mini_pending`/`_ocr_img` 及拖选路径对 `_last_source` 的跨线程读写）；OCR 语言包缓存加锁防并发重复探测；退出流程加尾部守卫（`_shutting_down`，退出的瞬间排队中的拖选/热键消息不再触发多余抓词）。行为零变化，纯消除数据竞争。
+- **Tk 回调健壮性（审查修复）**：NoteWindow 工具条 `lambda e, c=cmd` 补默认参数（P0①，与 v1.6.4 崩溃同构的唯一残留）；Settings 滚轮从 `bind_all` 改为绑定窗口自身（②，修复关设置后滚轮事件泄漏到其他窗口刷 `UNCAUGHT-TK`）；方法型回调统一 `event=None` 防御销毁竞态（P1④(+⑫)）。
+- 验证：smoke **146/146**（新增 6.14 节 6 项：跨线程状态走队列接线）、e2e 14/14×2。
+
 **如果以后再出现**：取 `logs\QuickTool.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
 
 ### 4.12 置顶便签（v1.6 新增）
@@ -628,7 +633,7 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 | 测试 | 覆盖 | 结果 |
 |---|---|---|
-| `tests/smoke.py` | 热键解析（含 **Ctrl+Prtsc → VK_SNAPSHOT**）、**热键顺延表键型回归**、剪贴板快照/还原、PDF 断词、抓词链路、Win32 窗口/热键/托盘、鼠标拖选钩子、5 引擎、**GDI 抓屏 + 截图 OCR 端到端**、**截图对照 PinWindow**（BMP→PNG→PhotoImage→滚轮缩放→**多窗口并存/级联偏移/独立关闭**→**v1.5.2 剪贴板 CF_DIB**（放图/快照兼容/还原文本）+ **存 PNG**（路径/魔数/尺寸/toast）+ **v1.5.3 孤儿 release 防御**（孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消）+ **选区流程竞态守卫**（_selecting 期间钩子不抢拖拽、结束后正常抓词），v1.5 新增）、**日志系统 7 项断言**、**v1.6.3 迷你按钮『译』『便』双按钮 13 项**（按钮条宽度/两圆不重叠/落点索引映射/忽略区覆盖整条/悬停只高亮当前圆/点『便』走 mini_note/点『译』走 mini_translate/无事件默认翻译/进入取消自动隐藏）、**v1.6.4 Popup 销毁竞态健壮性 4 项**、**v1.6.5 便签内全文搜索 9 项**（搜索条显隐/实时高亮命中/计数标签/多命中前后跳转/当前命中金色高亮/空查询清空）、**v1.6.6 控制台/截图遮罩拖选守卫 11 项**（console 类名/进程名判定、overlay topmost+盖满屏几何判定、_handle_drag_end 命中守卫不抓词） | **140/140** ✅ |
+| `tests/smoke.py` | 热键解析（含 **Ctrl+Prtsc → VK_SNAPSHOT**）、**热键顺延表键型回归**、剪贴板快照/还原、PDF 断词、抓词链路、Win32 窗口/热键/托盘、鼠标拖选钩子、5 引擎、**GDI 抓屏 + 截图 OCR 端到端**、**截图对照 PinWindow**（BMP→PNG→PhotoImage→滚轮缩放→**多窗口并存/级联偏移/独立关闭**→**v1.5.2 剪贴板 CF_DIB**（放图/快照兼容/还原文本）+ **存 PNG**（路径/魔数/尺寸/toast）+ **v1.5.3 孤儿 release 防御**（孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消）+ **选区流程竞态守卫**（_selecting 期间钩子不抢拖拽、结束后正常抓词），v1.5 新增）、**日志系统 7 项断言**、**v1.6.3 迷你按钮『译』『便』双按钮 13 项**（按钮条宽度/两圆不重叠/落点索引映射/忽略区覆盖整条/悬停只高亮当前圆/点『便』走 mini_note/点『译』走 mini_translate/无事件默认翻译/进入取消自动隐藏）、**v1.6.4 Popup 销毁竞态健壮性 4 项**、**v1.6.5 便签内全文搜索 9 项**（搜索条显隐/实时高亮命中/计数标签/多命中前后跳转/当前命中金色高亮/空查询清空）、**v1.6.6 控制台/截图遮罩拖选守卫 11 项**（console 类名/进程名判定、overlay topmost+盖满屏几何判定、_handle_drag_end 命中守卫不抓词）、**v1.6.7 跨线程状态走队列 6 项**（拖选来源随 payload 透传/mini_show 派发携带来源/mini_note 用按钮携带来源/无来源兜底/mini_translate 直入 job_q/OCR 路径随 payload） | **146/146** ✅ |
 | `tests/harden_check.py` | **v1.4/v1.4.1 加固专项**：畸形剪贴板数据（无 NUL 的 CF_TEXT/CF_UNICODETEXT、奇数字节流）不越界不崩溃、正常 UTF-16 逐字读回、快照跳过 CF_BITMAP 等非 HGLOBAL 格式、带位图剪贴板安全还原、20 万字符读写、**日志轮转**（>2MB 自动切文件且主日志不膨胀）、**v1.4.1 并发剪贴板压力**（4 线程×150 次 = 600 次操作 0 异常、加锁后写读一致、测后还原剪贴板） | 14/14 ✅ |
 | `tests/taskbar_rebuild_check.py` | **v1.4 TaskbarCreated 托盘重建白盒验证**：注册消息号 ≥0xC000、注入广播消息触发 `_tray_add` 重建、非该消息不误触、关闭托盘时不重建。同时抓到并修复 `sys.excepthook` 单参签名 bug（日志钩子自己先炸） | 5/5 ✅ |
 | `tests/e2e.py` | 真起进程，`SendInput` 真实按键触发 → 弹窗 → 托盘消息模拟打开设置（**断言窗口 state=normal 且已映射**，防 withdrawn 不可见回归）→ 迷你按钮翻译链路 → 截图对照小窗 + **剪贴板 CF_DIB 探针（v1.5.2）** → **OCR 桥语言包探针** → 置顶便签链路（含 **v1.6.3 迷你按钮『便』累积探针 `MINI_NOTE_TOTAL=3`**）→ 干净退出 | **14/14** ✅（源码版 + 打包版双跑） |
@@ -658,4 +663,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTool v1.6.6 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTool v1.6.7 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
