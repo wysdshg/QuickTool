@@ -145,13 +145,16 @@ class Popup:
         self.win.update_idletasks()
         h = self.win.winfo_reqheight()
 
-        left, top, right, bottom = wa.get_work_area()
         if self.app.cfg.get("popup.follow_cursor", True):
             cx, cy = wa.get_cursor_pos()
+            # 按鼠标所在显示器夹紧（v1.6.8 ⑤）：get_work_area() 只有主屏，
+            # 副屏拖选出的气泡会被夹回主屏右缘。
+            left, top, right, bottom = wa.get_work_area_at(cx, cy)
             x, y = cx + 16, cy + 26
             if y + h > bottom:
                 y = max(top, cy - h - 18)
         else:
+            left, top, right, bottom = wa.get_work_area()
             x, y = (left + right - w) // 2, (top + bottom - h) // 2
         x = max(left + 4, min(x, right - w - 4))
         y = max(top + 4, min(y, bottom - h - 4))
@@ -279,7 +282,9 @@ class MiniButton:
 
     def _place(self, x, y):
         s, w = self.SIZE, self.width
-        left, top, right, bottom = wa.get_work_area()
+        # 按鼠标所在显示器夹紧（v1.6.8 ⑤）：get_work_area() 只有主屏，副屏
+        # 拖选后按钮会被夹回主屏右缘、离鼠标十万八千里。
+        left, top, right, bottom = wa.get_work_area_at(x, y)
         px = min(x + 10, right - w - 6)
         py = y + 16
         if py + s > bottom:
@@ -386,9 +391,18 @@ class RegionSelector(tk.Toplevel):
         self.app = app
         self.on_done = on_done
         self.done = False
-        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        # 盖整个虚拟屏而非只盖主屏（v1.6.8 ⑤）：winfo_screenwidth() 只返回
+        # 主屏尺寸，双屏下副屏根本框不到；且主屏不在虚拟原点时（副屏居左/
+        # 上方），遮罩 +0+0 的 canvas 坐标与 BitBlt 的虚拟屏坐标错位，会
+        # 抓到错区域。on_done 交付虚拟屏坐标，消费端 grab_screen_bmp 语义一致。
+        vx, vy, sw, sh = wa.get_virtual_screen()
+        self._vx, self._vy = vx, vy
         self.overrideredirect(True)
-        self.geometry(f"{sw}x{sh}+0+0")
+        # geometry 的 x/y 段必须用「+前缀 + 绝对值」连写（"+{vx}+{vy}"）：
+        # 实测 Tk 把 "-1920"（无 + 前缀）当『距右缘偏移』语义，而 "+-1920"
+        # 才是绝对坐标。副屏居左时 vx 为负，只能靠后者把遮罩左缘放到虚拟
+        # 桌面 -1920 处（v1.6.8 ⑤）。
+        self.geometry(f"{sw}x{sh}+{vx}+{vy}")
         self.configure(bg="black")
         self.attributes("-alpha", 0.32)
         self.attributes("-topmost", True)
@@ -448,7 +462,9 @@ class RegionSelector(tk.Toplevel):
             return
         self.close(completed=True)           # 完成路径：_selecting 由回调清
         try:
-            self.on_done(x0, y0, w, h)
+            # canvas 坐标 → 虚拟屏坐标：主屏不在虚拟原点（副屏居左/上）时
+            # 平移 (vx, vy) 后才是 BitBlt 能用的坐标（v1.6.8 ⑤）。
+            self.on_done(x0 + self._vx, y0 + self._vy, w, h)
         except Exception:
             pass
 
@@ -548,8 +564,12 @@ class PinWindow:
         b.bind("<Button-1>", lambda e=None: self.close())
 
     def _fit_size(self):
-        """按工作区 85% 上限取初始缩放倍数（只缩小，不放大）。"""
-        left, top, right, bottom = wa.get_work_area()
+        """按落点显示器工作区 85% 上限取初始缩放倍数（只缩小，不放大）。
+
+        v1.6.8 ⑤：原先按主屏工作区适配，副屏比主屏小时初始窗口会溢出副屏。
+        """
+        cx, cy = wa.get_cursor_pos()
+        left, top, right, bottom = wa.get_work_area_at(cx, cy)
         max_w, max_h = (right - left) * 0.85, (bottom - top) * 0.85
         f = 1
         while self._orig_w // f > max_w or self._orig_h // f > max_h:
@@ -598,7 +618,9 @@ class PinWindow:
         bar_h = 26
         h = self.cv.winfo_reqheight() + 2 + bar_h
         cx, cy = wa.get_cursor_pos()
-        left, top, right, bottom = wa.get_work_area()
+        # 按鼠标所在显示器夹紧（v1.6.8 ⑤），get_work_area() 只有主屏会把
+        # 副屏上的对照窗夹回主屏。
+        left, top, right, bottom = wa.get_work_area_at(cx, cy)
         # 级联偏移：序号越大越往右下错开，避免新窗口完全盖住旧窗口
         off = (self.index - 1) * self.CASCADE
         x = min(max(cx - w // 2 + off, left + 4), right - w - 4)
@@ -1009,21 +1031,26 @@ class NoteWindow:
 
     # ------------------------------------------------------------ 交互
     def _place(self):
-        left, top, right, bottom = wa.get_work_area()
         w, h = self.W, self.H
-        # 位置记忆优先（上次关窗的位置还在屏幕内就原样恢复），否则鼠标附近
+        # 位置记忆优先：上次位置落在哪个显示器就回哪个显示器。原先按主屏
+        # 工作区夹紧——在副屏上关掉的便签重开会被拽回主屏（v1.6.8 ⑤）。
+        # get_work_area_at 对『已拔出显示器上的记忆点』自动落到最近在用屏，
+        # 与『夹紧 + 失效回退』等价且不丢副屏记忆。
         x = y = None
         cfg = getattr(self.app, "cfg", None)
         if cfg is not None:
             try:
-                sx = self._clamp(cfg.get("note_x", -9999), left, right - w - 4)
-                sy = self._clamp(cfg.get("note_y", -9999), top, bottom - h - 4)
-                if left <= sx <= right - w - 4 and top <= sy <= bottom - h - 4:
-                    x, y = sx, sy
+                rx = cfg.get("note_x", -9999)
+                ry = cfg.get("note_y", -9999)
+                if isinstance(rx, int) and isinstance(ry, int):
+                    left, top, right, bottom = wa.get_work_area_at(rx, ry)
+                    x = self._clamp(rx, left, right - w - 4)
+                    y = self._clamp(ry, top, bottom - h - 4)
             except Exception:
                 x = y = None
         if x is None:
             cx, cy = wa.get_cursor_pos()
+            left, top, right, bottom = wa.get_work_area_at(cx, cy)
             x = min(max(cx - w // 2, left + 4), right - w - 4)
             y = min(max(cy - h // 2, top + 4), bottom - h - 4)
         self.win.geometry(f"{w}x{h}+{int(x)}+{int(y)}")
@@ -1437,7 +1464,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.7 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.6.8 · 零第三方依赖",
                  fg="#a0a8b8", bg="#f5f7fa",
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 

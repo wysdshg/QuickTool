@@ -533,12 +533,64 @@ user32.GetWindowRect.argtypes = [HANDLE, ctypes.POINTER(RECT)]
 user32.GetWindowRect.restype = wt.BOOL
 
 
+class MONITORINFO(ctypes.Structure):
+    """GetMonitorInfoW 输出结构。cbSize 必须由调用方预填结构体大小。"""
+    _fields_ = [("cbSize", wt.DWORD),
+                ("rcMonitor", RECT),
+                ("rcWork", RECT),
+                ("dwFlags", wt.DWORD)]
+
+
+user32.MonitorFromPoint.argtypes = [POINT, wt.DWORD]
+user32.MonitorFromPoint.restype = HANDLE
+user32.GetMonitorInfoW.argtypes = [HANDLE, ctypes.POINTER(MONITORINFO)]
+user32.GetMonitorInfoW.restype = wt.BOOL
+
+
 def get_work_area():
     """主显示器工作区（排除任务栏），用于把悬浮窗夹在可见范围内。"""
     r = RECT()
     if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
         return r.left, r.top, r.right, r.bottom
     return 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+
+
+def get_virtual_screen():
+    """虚拟桌面矩形 (x, y, w, h)——所有显示器外接矩形（v1.6.8 ⑤ 多显示器）。
+
+    主屏不一定在虚拟原点：副屏可放在主屏左/上方，此时 x/y 为负
+    （例：主屏在右、副屏 1920 宽居左 → x=-1920）。截图遮罩必须盖
+    整个虚拟屏，否则副屏上无法框选；抓屏坐标也必须是虚拟屏语义
+    （BitBlt 的屏幕 DC 就是虚拟屏坐标系）。
+    """
+    x = user32.GetSystemMetrics(76)   # SM_XVIRTUALSCREEN
+    y = user32.GetSystemMetrics(77)   # SM_YVIRTUALSCREEN
+    w = user32.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+    h = user32.GetSystemMetrics(79)   # SM_CYVIRTUALSCREEN
+    if w <= 0 or h <= 0:              # 取不到虚拟屏时退回主屏
+        return 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+    return int(x), int(y), int(w), int(h)
+
+
+def get_work_area_at(x, y):
+    """点 (x, y) 所在显示器的工作区（排除任务栏）。坐标语义=虚拟屏坐标。
+
+    SPI_GETWORKAREA 只返回主屏工作区：副屏上拖选后『译便』按钮/对照窗用
+    它夹紧，落点会被错误夹回主屏（离鼠标十万八千里）。这里用
+    MonitorFromPoint 定位真实所在屏（MONITOR_DEFAULTTONEAREST=2，指针在两屏
+    边界缝里也能落到最近屏），取该屏 rcWork。任何失败退回主屏 get_work_area。
+    """
+    try:
+        hmon = user32.MonitorFromPoint(POINT(int(x), int(y)), 2)
+        if hmon:
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                r = mi.rcWork
+                return r.left, r.top, r.right, r.bottom
+    except Exception:
+        pass
+    return get_work_area()
 
 
 def force_foreground(hwnd):
