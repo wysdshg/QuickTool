@@ -809,9 +809,20 @@ class App:
             self.ocr_selector = None
             try:
                 data = wa.grab_screen_bmp(x, y, w, h)
-                path = os.path.join(tempfile.gettempdir(), "QuickTool_ocr.bmp")
-                with open(path, "wb") as f:
-                    f.write(data)
+                # v1.6.10 P2-1：每次截图用唯一临时文件——固定同名路径会让
+                # 「job1 入队未跑、job2 已覆盖写」时 job1 读到 job2 的图
+                # （快速连发两次截图会重复出结果）。payload 带各自路径即无覆盖。
+                fd, path = tempfile.mkstemp(prefix="qt_ocr_", suffix=".bmp")
+                os.close(fd)
+                try:
+                    with open(path, "wb") as f:
+                        f.write(data)
+                except Exception:
+                    try:
+                        os.unlink(path)
+                    except Exception:
+                        pass
+                    raise
             except Exception as exc:
                 self.q.put(("toast", ("截图失败", str(exc))))
                 return
@@ -830,16 +841,24 @@ class App:
         if not img:
             return
         log = ls.get_logger()
-        log.info("OCR-START img=%s", img)
-        lang = ocr.pick_lang(self.cfg.get("ocr_lang", "auto"),
-                             ocr.available_langs())
-        if not lang:
-            log.info("OCR-NO-LANG")
-            self.q.put(("ocr_result", (False, "", "no_lang")))
-            return
-        ok, text, _tag, err = ocr.ocr_image_file(img, lang)
-        log.info("OCR-END ok=%s len=%s err=%s", ok, len(text or ""), err)
-        self.q.put(("ocr_result", (ok, text, err)))
+        # v1.6.10 P2-1：临时 bmp 用完即删——每次截图的文件是唯一的，删自己
+        # 的不影响别的 job；no_lang 等早退路径也走 finally，保证不残留 temp。
+        try:
+            log.info("OCR-START img=%s", img)
+            lang = ocr.pick_lang(self.cfg.get("ocr_lang", "auto"),
+                                 ocr.available_langs())
+            if not lang:
+                log.info("OCR-NO-LANG")
+                self.q.put(("ocr_result", (False, "", "no_lang")))
+                return
+            ok, text, _tag, err = ocr.ocr_image_file(img, lang)
+            log.info("OCR-END ok=%s len=%s err=%s", ok, len(text or ""), err)
+            self.q.put(("ocr_result", (ok, text, err)))
+        finally:
+            try:
+                os.unlink(img)
+            except Exception:
+                pass
 
     def _handle_ocr_result(self, ok, text, err):
         """主线程：OCR 完成后走统一翻译管线（loading → result 同热键路径）。"""
