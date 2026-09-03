@@ -407,6 +407,12 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **修复**：拖选结束先用**按下点所在窗口**判定再决定是否抓词——`is_console_window`（conhost/Windows Terminal/mintty 类名+进程名）与 `is_overlay_window`（topmost+盖满屏的截图遮罩特征）命中即跳过并记 `DRAG-SKIP reason=console|overlay`。正常浏览器/编辑器拖选完全不受影响。热键 Ctrl+Q/Ctrl+Alt+N 路径本次未动。
 - 验证：smoke **140/140**（新增 6.13 节 11 项：控制台类名/进程名判定、遮罩几何判定、_handle_drag_end 集成不触发抓词）、e2e 14/14×2。
 
+**v1.6.10 三项 P2 技术债清理（P2-1~P2-3）**（2026-09-03）：
+- **P2-1 截图 OCR 临时文件竞态修复（唯一有真实 bug 的一项）**：截图翻译每次选区改写唯一临时文件（`tempfile.mkstemp` 前缀 `qt_ocr_`，取代固定名 `QuickTool_ocr.bmp`）——此前快速连发两次截图（第一次的 OCR 任务尚未开跑、第二次已覆盖写同一路径）会让第一次读到第二次的图、重复出结果；OCR 任务结束按各自路径删除临时文件（含 no_lang 早退路径走 finally），不再残留 temp。
+- **P2-2 死代码清理**：删除回搜功能（v1.6.5 移除）遗留的 `send_ctrl_f` / `send_ctrl_v` / `set_foreground` / `quit_message_loop` 四个零引用函数（-35 行）；`get_foreground_window` 是活代码（来源窗口记录，main.py 3 处调用）保留。
+- **P2-3 winapi.py argtypes 声明去重**：9 组共 13 行重复声明（`SetForegroundWindow`×3、剪贴板族/`VkKeyScanW`/`GetWindowLongW`/`SetWindowLongW`/`DestroyMenu` 各×2——同一 API 在"顶部集中区"与"函数使用处"各声明一次）收敛为**每 API 恰一次**，文件头补声明约定注释；值与原完全一致，零行为变化。
+- 验证：smoke **167/167**（新增 6.17 死代码守护 3 项 + 6.18 argtypes 唯一性守护 3 项，均为源码级防回退断言）、e2e 14/14×2。
+
 **v1.6.9 主题硬编码清理（审查清单 ⑥）**（2026-09-03）：
 - **症状**：设置里把主题切成 light，只有翻译气泡跟着变——截图对照小窗、置顶便签、设置窗口本身全是写死的颜色（前两者写死 `THEMES["dark"]`，设置窗口整窗写死浅色 `#f5f7fa`），切主题对它们毫无影响。
 - **修复**：`ui.py` 新增统一取色入口 `current_theme(app)`（读 `popup.theme`；配置缺失/主题名非法/取色异常一律回退 dark 且绝不抛异常——主题只该影响外观，不能让窗口开不出来）。`PinWindow`/`NoteWindow`/`RegionSelector`/`Settings`/`Popup`/`MiniButton` 全部改经它取色，源码里不再允许真实出现 `THEMES["dark"]`（新增 smoke 守护断言防回退）。主题表补 4 键：`win`（常规窗口底色）、`canvas`（图像查看区）、`on_mask`（遮罩文字）、`on_accent`（accent 底色上的文字）。
@@ -646,7 +652,7 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 | 测试 | 覆盖 | 结果 |
 |---|---|---|
-| `tests/smoke.py` | 热键解析（含 **Ctrl+Prtsc → VK_SNAPSHOT**）、**热键顺延表键型回归**、剪贴板快照/还原、PDF 断词、抓词链路、Win32 窗口/热键/托盘、鼠标拖选钩子、5 引擎、**GDI 抓屏 + 截图 OCR 端到端**、**截图对照 PinWindow**（BMP→PNG→PhotoImage→滚轮缩放→**多窗口并存/级联偏移/独立关闭**→**v1.5.2 剪贴板 CF_DIB**（放图/快照兼容/还原文本）+ **存 PNG**（路径/魔数/尺寸/toast）+ **v1.5.3 孤儿 release 防御**（孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消）+ **选区流程竞态守卫**（_selecting 期间钩子不抢拖拽、结束后正常抓词），v1.5 新增）、**日志系统 7 项断言**、**v1.6.3 迷你按钮『译』『便』双按钮 13 项**（按钮条宽度/两圆不重叠/落点索引映射/忽略区覆盖整条/悬停只高亮当前圆/点『便』走 mini_note/点『译』走 mini_translate/无事件默认翻译/进入取消自动隐藏）、**v1.6.4 Popup 销毁竞态健壮性 4 项**、**v1.6.5 便签内全文搜索 9 项**（搜索条显隐/实时高亮命中/计数标签/多命中前后跳转/当前命中金色高亮/空查询清空）、**v1.6.6 控制台/截图遮罩拖选守卫 11 项**（console 类名/进程名判定、overlay topmost+盖满屏几何判定、_handle_drag_end 命中守卫不抓词）、**v1.6.7 跨线程状态走队列 6 项**（拖选来源随 payload 透传/mini_show 派发携带来源/mini_note 用按钮携带来源/无来源兜底/mini_translate 直入 job_q/OCR 路径随 payload）、**v1.6.8 多显示器 helper 3 项**（单屏下虚拟屏==主屏/远偏离屏落点夹回主屏工作区/光标所在屏工作区正常返回）、**v1.6.9 主题取色统一入口 11 项**（dark/light 键集合一致/按配置取色/非法名与异常回退不崩/on_mask 两主题均浅色/三窗口换肤入口存在/ui.py 无真实 `THEMES["dark"]` 硬编码守护） | **160/160** ✅ |
+| `tests/smoke.py` | 热键解析（含 **Ctrl+Prtsc → VK_SNAPSHOT**）、**热键顺延表键型回归**、剪贴板快照/还原、PDF 断词、抓词链路、Win32 窗口/热键/托盘、鼠标拖选钩子、5 引擎、**GDI 抓屏 + 截图 OCR 端到端**、**截图对照 PinWindow**（BMP→PNG→PhotoImage→滚轮缩放→**多窗口并存/级联偏移/独立关闭**→**v1.5.2 剪贴板 CF_DIB**（放图/快照兼容/还原文本）+ **存 PNG**（路径/魔数/尺寸/toast）+ **v1.5.3 孤儿 release 防御**（孤儿 release 不触发完成 / 正常框选触发 / <MIN_SIZE 取消）+ **选区流程竞态守卫**（_selecting 期间钩子不抢拖拽、结束后正常抓词），v1.5 新增）、**日志系统 7 项断言**、**v1.6.3 迷你按钮『译』『便』双按钮 13 项**（按钮条宽度/两圆不重叠/落点索引映射/忽略区覆盖整条/悬停只高亮当前圆/点『便』走 mini_note/点『译』走 mini_translate/无事件默认翻译/进入取消自动隐藏）、**v1.6.4 Popup 销毁竞态健壮性 4 项**、**v1.6.5 便签内全文搜索 9 项**（搜索条显隐/实时高亮命中/计数标签/多命中前后跳转/当前命中金色高亮/空查询清空）、**v1.6.6 控制台/截图遮罩拖选守卫 11 项**（console 类名/进程名判定、overlay topmost+盖满屏几何判定、_handle_drag_end 命中守卫不抓词）、**v1.6.7 跨线程状态走队列 6 项**（拖选来源随 payload 透传/mini_show 派发携带来源/mini_note 用按钮携带来源/无来源兜底/mini_translate 直入 job_q/OCR 路径随 payload）、**v1.6.8 多显示器 helper 3 项**（单屏下虚拟屏==主屏/远偏离屏落点夹回主屏工作区/光标所在屏工作区正常返回）、**v1.6.9 主题取色统一入口 11 项**（dark/light 键集合一致/按配置取色/非法名与异常回退不崩/on_mask 两主题均浅色/三窗口换肤入口存在/ui.py 无真实 `THEMES["dark"]` 硬编码守护）、**v1.6.10 P2 清理 8 项**（OCR 唯一临时文件+连发防覆盖 2 项/死代码清除守护 3 项/argtypes 唯一性守护 3 项） | **167/167** ✅ |
 | `tests/harden_check.py` | **v1.4/v1.4.1 加固专项**：畸形剪贴板数据（无 NUL 的 CF_TEXT/CF_UNICODETEXT、奇数字节流）不越界不崩溃、正常 UTF-16 逐字读回、快照跳过 CF_BITMAP 等非 HGLOBAL 格式、带位图剪贴板安全还原、20 万字符读写、**日志轮转**（>2MB 自动切文件且主日志不膨胀）、**v1.4.1 并发剪贴板压力**（4 线程×150 次 = 600 次操作 0 异常、加锁后写读一致、测后还原剪贴板） | 14/14 ✅ |
 | `tests/taskbar_rebuild_check.py` | **v1.4 TaskbarCreated 托盘重建白盒验证**：注册消息号 ≥0xC000、注入广播消息触发 `_tray_add` 重建、非该消息不误触、关闭托盘时不重建。同时抓到并修复 `sys.excepthook` 单参签名 bug（日志钩子自己先炸） | 5/5 ✅ |
 | `tests/e2e.py` | 真起进程，`SendInput` 真实按键触发 → 弹窗 → 托盘消息模拟打开设置（**断言窗口 state=normal 且已映射**，防 withdrawn 不可见回归）→ 迷你按钮翻译链路 → 截图对照小窗 + **剪贴板 CF_DIB 探针（v1.5.2）** → **OCR 桥语言包探针** → 置顶便签链路（含 **v1.6.3 迷你按钮『便』累积探针 `MINI_NOTE_TOTAL=3`**）→ 干净退出 | **14/14** ✅（源码版 + 打包版双跑） |
@@ -676,4 +682,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTool v1.6.9 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTool v1.6.10 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
