@@ -16,6 +16,12 @@ import ctypes
 import ctypes.wintypes as wt
 import threading
 
+# v1.6.10 P2-3 约定：每个 API 的 restype / argtypes **只能声明一次**（本文件
+# 曾把同一 API 的 argtypes 在"顶部集中区"和"函数使用处"重复声明最多 3 次，
+# 值一致时无害，但一处改一处不改就会分叉出诡异 bug）。新增 API 时优先在
+# 就近的成对声明处补充；smoke 6.18 有源码级守卫：任何 API 出现第二次声明
+# 直接判失败。
+
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 shell32 = ctypes.WinDLL("shell32", use_last_error=True)
@@ -185,13 +191,8 @@ user32.GetWindowLongW.argtypes = [HANDLE, ctypes.c_int]
 user32.GetWindowLongW.restype = ctypes.c_long
 user32.SetWindowLongW.argtypes = [HANDLE, ctypes.c_int, ctypes.c_long]
 user32.SetWindowLongW.restype = ctypes.c_long
-user32.SetForegroundWindow.argtypes = [HANDLE]
 user32.DestroyMenu.argtypes = [HANDLE]
 user32.TrackPopupMenu.restype = ctypes.c_int
-user32.OpenClipboard.argtypes = [HANDLE]
-user32.GetClipboardData.argtypes = [ctypes.c_uint]
-user32.SetClipboardData.argtypes = [ctypes.c_uint, HANDLE]
-user32.EnumClipboardFormats.argtypes = [ctypes.c_uint]
 user32.VkKeyScanW.restype = ctypes.c_short
 user32.VkKeyScanW.argtypes = [ctypes.c_wchar]
 user32.RegisterClassExW.argtypes = [ctypes.POINTER(WNDCLASSEXW)]
@@ -202,8 +203,6 @@ user32.AppendMenuW.argtypes = [HANDLE, ctypes.c_uint, ctypes.c_size_t, LPWSTR]
 user32.TrackPopupMenu.argtypes = [HANDLE, ctypes.c_uint, ctypes.c_int, ctypes.c_int,
                                   ctypes.c_int, HANDLE, ctypes.c_void_p]
 user32.TrackPopupMenu.restype = ctypes.c_int
-user32.SetForegroundWindow.argtypes = [HANDLE]
-user32.DestroyMenu.argtypes = [HANDLE]
 user32.LoadIconW.restype = HANDLE
 user32.LoadIconW.argtypes = [HANDLE, ctypes.c_void_p]   # 传资源 ID（整数）时用 c_void_p
 user32.LoadImageW.restype = HANDLE
@@ -315,8 +314,6 @@ class HotkeySpec:
         return mods | MOD_NOREPEAT, vk
 
 
-user32.VkKeyScanW.restype = ctypes.c_short
-user32.VkKeyScanW.argtypes = [ctypes.c_wchar]
 
 
 def register_hotkey(hwnd, hotkey_id, hotkey_str):
@@ -598,10 +595,6 @@ def set_tool_window(hwnd, on=True):
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
 
 
-user32.GetWindowLongW.argtypes = [HANDLE, ctypes.c_int]
-user32.GetWindowLongW.restype = ctypes.c_long
-user32.SetWindowLongW.argtypes = [HANDLE, ctypes.c_int, ctypes.c_long]
-user32.SetWindowLongW.restype = ctypes.c_long
 
 
 # ---------------------------------------------------------------- 剪贴板
