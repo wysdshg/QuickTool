@@ -539,6 +539,7 @@ class KbManager(tk.Toplevel):
                                 fg=th["sub"], bg=th["win"], anchor="w")
         self.summary.pack(side="left", fill="x", expand=True)
         for txt, cmd in ((" 导入文件… ", self.import_files),
+                         (" 导入文件夹… ", self.import_folder),
                          (" 删除选中 ", self.delete_selected),
                          (" 清空库 ", self.clear_all)):
             b = ttk_button(foot, txt, cmd, th)
@@ -565,13 +566,36 @@ class KbManager(tk.Toplevel):
 
     # ------------------------------------------------------------ 动作
     def import_files(self):
-        """导入 .txt/.md（同步，秒回）与 .pdf（后台线程逐页提取 + 进度）。"""
+        """导入 .txt/.md（同步，秒回）与 .pdf（后台线程逐页提取 + 进度）。
+
+        askopenfilenames 本身支持 Ctrl/Shift 多选；更大批量走 import_folder。
+        """
         paths = filedialog.askopenfilenames(
             parent=self, title="选择要导入的学习资料",
             filetypes=[("文本/笔记/PDF", "*.txt *.md *.pdf"),
                        ("所有文件", "*.*")])
         if not paths:
             return
+        self._dispatch_import(paths)
+
+    def import_folder(self):
+        """批量导入：选一个文件夹，递归扫描全部 .txt/.md/.pdf 走同一入库管线。"""
+        root = filedialog.askdirectory(
+            parent=self, title="选择文件夹（递归扫描 txt / md / pdf）")
+        if not root:
+            return
+        texts, pdfs, seen = scan_folder(root)
+        if seen == 0:
+            self._toast("没有可导入的文件",
+                        "该文件夹（含子目录）下没有 .txt / .md / .pdf 文件")
+            return
+        if not (texts or pdfs):
+            self._toast("没有新文件", f"扫描到 {seen} 个文件，全部为空文件已跳过")
+            return
+        self._dispatch_import(texts + pdfs)
+
+    def _dispatch_import(self, paths):
+        """txt/md 同步入库 + PDF 后台解析，统一汇总 toast（import_files/folder 共用）。"""
         pdfs = [p for p in paths if p.lower().endswith(".pdf")]
         texts = [p for p in paths if not p.lower().endswith(".pdf")]
         added = skipped = failed = 0
@@ -626,20 +650,33 @@ class KbManager(tk.Toplevel):
 
     # ---------------- PDF：后台线程逐页提取，主线程入库 ----------------
     def _import_pdfs_async(self, paths):
-        """PDF 走后台线程（pypdf 提取），经 _pdfq 回主线程入库。返回任务数。"""
+        """PDF 走后台线程（pypdf 提取），经 _pdfq 回主线程入库。返回任务数。
+
+        批量导入（选文件夹）可能一次来几十个 PDF：信号量限流并发提取 2 个，
+        其余线程在 acquire 处排队，避免 N 线程同时跑 CPU 密集解压。
+        """
         if not self._pdf_ready():
             return 0
-        self._pdf_pending = getattr(self, "_pdf_pending", 0) + len(paths)
+        prev = getattr(self, "_pdf_pending", 0)
+        self._pdf_pending = prev + len(paths)
+        if prev == 0:
+            self._pdf_done = 0
+            self._pdf_total = len(paths)
+        else:                       # 与前一批并行中：总数累加，done 不动
+            self._pdf_total = getattr(self, "_pdf_total", prev) + len(paths)
         self._pdf_stats = getattr(self, "_pdf_stats",
                                   {"added": 0, "skipped": 0, "failed": 0,
                                    "warns": []})
         if not hasattr(self, "_pdfq"):
             self._pdfq = queue.Queue()
             self._poll_pdf()
+        if not hasattr(self, "_pdf_sem"):
+            self._pdf_sem = threading.Semaphore(2)
         for p in paths:
             name = os.path.basename(p)
             t = threading.Thread(target=self._pdf_worker,
-                                 args=(name, p, self._pdfq), daemon=True)
+                                 args=(name, p, self._pdfq, self._pdf_sem),
+                                 daemon=True)
             t.start()
         self.summary.configure(text=f"PDF 后台解析中（{self._pdf_pending} 个）…")
         return len(paths)
@@ -653,13 +690,22 @@ class KbManager(tk.Toplevel):
         return False
 
     @staticmethod
-    def _pdf_worker(name, path, q):
-        """后台线程：逐页提取，进度/结果/异常全走队列，不碰 Tk/sqlite。"""
+    def _pdf_worker(name, path, q, sem=None):
+        """后台线程：逐页提取，进度/结果/异常全走队列，不碰 Tk/sqlite。
+
+        sem 非空时先 acquire 再提取（批量导入限流并发），异常路径也要 release。
+        """
         from rag import pdftext
         try:
-            pages = pdftext.extract_pdf(
-                path, on_progress=lambda i, n, note:
-                    q.put(("progress", (name, i, n, note))))
+            if sem is not None:
+                sem.acquire()
+            try:
+                pages = pdftext.extract_pdf(
+                    path, on_progress=lambda i, n, note:
+                        q.put(("progress", (name, i, n, note))))
+            finally:
+                if sem is not None:
+                    sem.release()
             q.put(("done", (name, pages)))
         except Exception as exc:
             q.put(("error", (name, str(exc))))
@@ -679,8 +725,13 @@ class KbManager(tk.Toplevel):
                 kind, payload = self._pdfq.get_nowait()
                 if kind == "progress":
                     name, i, n, note = payload
+                    head = ""
+                    total = getattr(self, "_pdf_total", 0)
+                    if total > 1:
+                        done = total - self._pdf_pending
+                        head = f"PDF {min(done + 1, total)}/{total}："
                     self.summary.configure(
-                        text=f"解析 {name}… 第 {i}/{n} 页"
+                        text=f"{head}解析 {name}… 第 {i}/{n} 页"
                              + (f"（{note}）" if note else ""))
                 elif kind == "done":
                     self._pdf_ingest(*payload)
@@ -779,6 +830,26 @@ class KbManager(tk.Toplevel):
             self.destroy()
         except Exception:
             pass
+
+
+def scan_folder(root, exts=(".txt", ".md", ".pdf")):
+    """递归扫描文件夹下支持导入的文件，返回 (texts, pdfs, 扫描到的总数)。
+
+    纯函数不碰 Tk/sqlite（可单测）；跳过隐藏目录/隐藏文件；
+    大小写不敏感按扩展名分流，PDF 单独成列（走后台线程管线）。
+    """
+    texts, pdfs = [], []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for fn in filenames:
+            if fn.startswith("."):
+                continue
+            e = os.path.splitext(fn)[1].lower()
+            if e in exts:
+                (pdfs if e == ".pdf" else texts).append(os.path.join(dirpath, fn))
+    texts.sort()
+    pdfs.sort()
+    return texts, pdfs, len(texts) + len(pdfs)
 
 
 def ttk_button(parent, text, command, th):
