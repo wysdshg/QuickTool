@@ -54,10 +54,12 @@ from qt.config import Config
 from qt.translator import Translator
 from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
+from qt.ragui import KbManager, QaWindow
 
-APP_VERSION = "1.6.10"
+APP_VERSION = "1.7.0"
 
-HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE = 1, 2, 3, 4, 5, 6
+HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE, HK_RAG = \
+    1, 2, 3, 4, 5, 6, 7
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
 # 注：WM_APP+4/+6 曾是「迷你按钮翻译 / OCR 运行」的 Win32 线程中转消息，
 # v1.6.7 ③ 已改为直接入 job_q（文本/图片路径随 payload 走），故删除。
@@ -75,13 +77,17 @@ HOTKEY_CANDIDATES = {
     HK_PIN: ["Ctrl+Prtsc", "Ctrl+Alt+W", "Ctrl+Alt+D", "Ctrl+Alt+E"],
     # 置顶便签：N = Note；顺延要避开上面已用的 D/E/W
     HK_NOTE: ["Ctrl+Alt+N", "Ctrl+Alt+M", "Ctrl+Alt+B", "Ctrl+Alt+K"],
+    # 快捷提问 RAG：R 开头；顺延避开已被候选占用的字母（A/D/E/G/I/K/M/N/
+    # P/Q/S/T/W/X/F1/F8/F9/Prtsc 等），挑冷门键位兜底
+    HK_RAG: ["Ctrl+Alt+R", "Ctrl+Alt+Y", "Ctrl+Alt+U", "Ctrl+Alt+F7",
+             "Ctrl+Alt+;", "Ctrl+Alt+F6"],
 }
 
-TRAY_SETTINGS, TRAY_QUIT, TRAY_OCR, TRAY_PIN, TRAY_NOTE = (1001, 1002,
-                                                            1003, 1004, 1005)
+TRAY_SETTINGS, TRAY_QUIT, TRAY_OCR, TRAY_PIN, TRAY_NOTE, TRAY_RAG = \
+    (1001, 1002, 1003, 1004, 1005, 1006)
 TRAY_ITEMS = [(TRAY_SETTINGS, "设置"), (TRAY_OCR, "截图翻译"),
               (TRAY_PIN, "截图对照"), (TRAY_NOTE, "置顶便签"),
-              (0, None), (TRAY_QUIT, "退出")]
+              (TRAY_RAG, "快捷提问(RAG)"), (0, None), (TRAY_QUIT, "退出")]
 
 E2E_LOG = os.path.join(tempfile.gettempdir(), "QuickTool_e2e.log")
 
@@ -124,6 +130,13 @@ class App:
         self.ocr_selector = None        # 截图框选遮罩（主线程）
         self.pin_wins = []              # 截图对照小窗列表（可多个并存）
         self.note_win = None            # 置顶便签（单窗口累积，不并存多个）
+        # ---- RAG 快捷问答（v1.7）：独立 worker 跑联网，避免占住翻译/OCR 队列
+        self.qa_wins = []               # 问答窗列表（一个术语一窗，可并存）
+        self.qa_next_id = 1             # 问答窗递增 id（q 队列事件路由用）
+        self.kb_store = None            # 知识库（KbStore，惰性建，跨线程有锁）
+        self.rag_engine = None          # RagEngine（惰性建）
+        self.kb_mgr = None              # 文档库管理窗（单例）
+        self._rag_q = queue.Queue()     # RAG 任务：联网检索 + 流式生成
         # 后台 worker 队列：重活一律不放进 Win32 消息循环线程（见 _capture_worker）
         self._cap_q = queue.Queue()     # 抓词（模拟 Ctrl+C + 等剪贴板）
         self._cap_lock = threading.Lock()   # 非阻塞 acquire 当作"进行中"标志
@@ -154,6 +167,8 @@ class App:
                          name="CaptureWorker").start()
         threading.Thread(target=self._job_worker, daemon=True,
                          name="JobWorker").start()
+        threading.Thread(target=self._rag_worker, daemon=True,
+                         name="RagWorker").start()
         self._poll()
         # 心跳：每 5 分钟一条，证明"进程还活着"——区分空闲与假死
         self.root.after(300_000, self._heartbeat)
@@ -402,6 +417,8 @@ class App:
                     self._capture_for_hotkey()
                 elif kind == "note":
                     self._capture_for_note()
+                elif kind == "rag":
+                    self._capture_for_rag()
             except Exception:
                 ls.log_exc("CAPTURE-ERROR")
                 traceback.print_exc()
@@ -440,6 +457,16 @@ class App:
             return
         self.q.put(("note_text", (text, self._last_source)))
 
+    def _capture_for_rag(self):
+        """快捷提问抓词：选中内容作「背景」随问题发出；没选中也开窗让用户
+        直接打字提问。
+
+        与便签相同不做「自然语言」过滤——术语/代码/公式正是要问的对象。
+        抓到的文本只作文本背景（engine 侧 extra_context），不进检索关键词。
+        """
+        text = get_selected_text(first_timeout=0.25) or ""
+        self.q.put(("rag_open", (text.strip(), self._last_source)))
+
     def _job_worker(self):
         """慢任务线程（JobWorker）：联网翻译 / 截图 OCR。"""
         while True:
@@ -472,7 +499,8 @@ class App:
                 (HK_QUIT, self.cfg.get("hotkey_quit")),
                 (HK_OCR, self.cfg.get("hotkey_ocr")),
                 (HK_PIN, self.cfg.get("hotkey_pin")),
-                (HK_NOTE, self.cfg.get("hotkey_note"))]
+                (HK_NOTE, self.cfg.get("hotkey_note")),
+                (HK_RAG, self.cfg.get("hotkey_rag"))]
 
     def _try_register(self, hid, hotkey):
         try:
@@ -485,7 +513,8 @@ class App:
                    HK_QUIT: "hotkey_quit",
                    HK_OCR: "hotkey_ocr",
                    HK_PIN: "hotkey_pin",
-                   HK_NOTE: "hotkey_note"}
+                   HK_NOTE: "hotkey_note",
+                   HK_RAG: "hotkey_rag"}
 
     def _maybe_upgrade_hotkey(self, hid, hotkey):
         """顺延产物自动升级：配置里若存的是『被占用后顺延』的临时组合（即候选列表
@@ -528,7 +557,7 @@ class App:
         """
         labels = {HK_TRANSLATE: "划词翻译", HK_SETTINGS: "打开设置",
                   HK_QUIT: "退出程序", HK_OCR: "截图翻译", HK_PIN: "截图对照",
-                  HK_NOTE: "置顶便签"}
+                  HK_NOTE: "置顶便签", HK_RAG: "快捷提问(RAG)"}
         failed, notes = [], []
         used = set()
         for hid, hotkey in self._hotkey_map():
@@ -611,6 +640,11 @@ class App:
                 hwnd = wa.get_foreground_window()
                 self._last_source = wa.get_window_title(hwnd)
                 self.q.put(("note", None))
+            elif wparam == HK_RAG:
+                # 与便签同理：抓词前先记来源窗口标题
+                hwnd = wa.get_foreground_window()
+                self._last_source = wa.get_window_title(hwnd)
+                self.q.put(("rag", None))
             elif wparam == HK_SETTINGS:
                 self.q.put(("settings", None))
             elif wparam == HK_QUIT:
@@ -637,6 +671,10 @@ class App:
                     hwnd = wa.get_foreground_window()
                     self._last_source = wa.get_window_title(hwnd)
                     self.q.put(("note", None))
+                elif cmd == TRAY_RAG:
+                    hwnd = wa.get_foreground_window()
+                    self._last_source = wa.get_window_title(hwnd)
+                    self.q.put(("rag", None))
                 elif cmd == TRAY_QUIT:
                     self.q.put(("quit", None))
             return True
@@ -715,6 +753,26 @@ class App:
             self.open_pin()
         elif kind == "note":
             self._request_capture("note")
+        elif kind == "rag":
+            self._request_capture("rag")
+        elif kind == "rag_open":
+            selection, source = payload
+            self.open_qa(selection, source)
+        elif kind == "qa_status":
+            wid, msg = payload
+            win = self._qa_find(wid)
+            if win:
+                win.on_status(msg)
+        elif kind == "qa_delta":
+            wid, chunk = payload
+            win = self._qa_find(wid)
+            if win:
+                win.on_delta(chunk)
+        elif kind == "qa_done":
+            wid, answer, refs, err = payload
+            win = self._qa_find(wid)
+            if win:
+                win.on_done(answer, refs, err)
         elif kind == "note_text":
             text, source = payload
             self.open_note(text, source)
@@ -949,6 +1007,126 @@ class App:
             ls.get_logger().info("NOTE-SHOW chars=%s", len(text))
         e2e_log(f"NOTE_SHOWN count={self.note_win.count}")
 
+    # ============================================================ RAG 快捷提问
+    # 线程模型：窗口渲染只在主线程；联网检索 + 流式生成放 _rag_worker（独立于
+    # JobWorker，避免一段 10s 的 RAG 回答把翻译/OCR 排队全堵死）。engine 的回调
+    # 经 self.q 队列回主线程 _dispatch → 按 win_id 找到对应窗口逐段渲染。
+    # 知识库/引擎是惰性单例：首次用到才建（kb_store 跨线程访问靠内部锁）。
+
+    def ensure_kb_store(self):
+        if self.kb_store is None:
+            from rag.store import KbStore
+            self.kb_store = KbStore(self.cfg)
+        return self.kb_store
+
+    def ensure_rag_engine(self):
+        if self.rag_engine is None:
+            from rag.engine import RagEngine
+            self.rag_engine = RagEngine(self.ensure_kb_store(), self.cfg)
+        return self.rag_engine
+
+    def open_qa(self, selection="", source=""):
+        """打开快捷提问窗。选中内容（如有）作「背景」渲染，等待用户输入问题。
+
+        不自动提问：光标停在输入框，用户输入问题回车才发；直接回车 =
+        默认问法「解释一下选中的内容」。多窗并存：一个术语一个窗方便并排
+        对比，cascade 让新窗错开一点。
+        """
+        self._purge_qa_wins()
+        if not (selection or "").strip() and self.qa_wins:
+            win = self.qa_wins[0]
+            try:
+                win.win.lift()
+                win.entry.focus_set()
+            except Exception:
+                pass
+            return
+        try:
+            win = QaWindow(self, selection, source,
+                           cascade=len(self.qa_wins))
+        except Exception as exc:
+            ls.log_exc("QA-FAIL")
+            self.q.put(("toast", ("问答窗创建失败", str(exc))))
+            return
+        win.win_id = self.qa_next_id
+        self.qa_next_id += 1
+        self.qa_wins.append(win)
+        ls.get_logger().info("QA-SHOW id=%s sel_len=%s", win.win_id,
+                             len(selection))
+        e2e_log(f"QA_SHOWN id={win.win_id} sel={len(selection)}")
+
+    def ask_rag(self, window, question, selection=""):
+        """主线程入口：问题 + 选中背景交给 RAG worker（busy 由 QaWindow 管理）。
+
+        engine 侧 question 只作检索 query；selection 以 extra_context 注入
+        生成消息作消歧背景，绝不混进检索关键词（长背景会稀释 BM25/向量命中）。
+        """
+        try:
+            self.ensure_rag_engine()
+        except Exception as exc:
+            ls.log_exc("RAG-ENGINE-FAIL")
+            window.on_done(None, None, f"知识库初始化失败：{exc}")
+            return
+        self._rag_q.put((window.win_id, question, selection or ""))
+
+    def _rag_worker(self):
+        """RAG 联网 worker：串行处理问答（单线程保证 store/api 无并发竞争）。"""
+        while True:
+            wid, question, selection = self._rag_q.get()
+            try:
+                self._run_rag_job(wid, question, selection)
+            except Exception:
+                ls.log_exc(f"RAG-JOB-ERROR id={wid}")
+                self.q.put(("qa_done", (wid, None, None, "内部错误，见日志")))
+
+    def _run_rag_job(self, wid, question, selection=""):
+        """真正跑五阶段 pipeline（RagWorker 线程），结果/流片回主线程队列。"""
+        from rag.api import RagApiError
+        engine = self.ensure_rag_engine()
+
+        def status(msg):
+            self.q.put(("qa_status", (wid, msg)))
+
+        def delta(content, _reason):
+            if content:
+                self.q.put(("qa_delta", (wid, content)))
+
+        try:
+            res = engine.ask(question, extra_context=selection,
+                             on_status=status, on_delta=delta)
+            self.q.put(("qa_done", (wid, res.get("answer"),
+                                    res.get("refs"), None)))
+        except RagApiError as exc:
+            ls.get_logger().warning("RAG-ASK-FAIL id=%s err=%s", wid, exc)
+            self.q.put(("qa_done", (wid, None, None, str(exc))))
+        except Exception:
+            ls.log_exc(f"RAG-ASK-ERROR id={wid}")
+            self.q.put(("qa_done", (wid, None, None, "内部错误，见日志")))
+
+    def _qa_find(self, wid):
+        for w in list(self.qa_wins):
+            if w.win_id == wid and not w.closed:
+                return w
+        return None
+
+    def _purge_qa_wins(self):
+        self.qa_wins = [w for w in self.qa_wins if not w.closed]
+
+    def open_kb_manager(self):
+        if self.kb_mgr is not None:
+            try:
+                if self.kb_mgr.winfo_exists():
+                    self.kb_mgr.lift()
+                    self.kb_mgr.focus_force()
+                    return
+            except Exception:
+                self.kb_mgr = None
+        try:
+            self.kb_mgr = KbManager(self)
+        except Exception as exc:
+            ls.log_exc("KBMGR-FAIL")
+            self.q.put(("toast", ("文档库打开失败", str(exc))))
+
     def open_settings(self):
         if self.settings is not None:
             try:
@@ -1000,6 +1178,13 @@ class App:
             w.close()
         if self.note_win:
             self.note_win.close()
+        for w in list(self.qa_wins):
+            w.close()
+        if self.kb_mgr is not None:
+            try:
+                self.kb_mgr.close()
+            except Exception:
+                pass
         if self.hwnd:
             wa.post_message(self.hwnd, wa.WM_DESTROY)   # 触发 PostQuitMessage
         self.root.after(150, self._destroy)
@@ -1012,9 +1197,28 @@ class App:
             pass
 
 
+_MUTEX_HANDLE = None        # 单实例 Mutex 句柄（模块级持有，防被 GC 回收）
+
+
 def main():
     ls.setup_logging()                           # 比 App() 更早，配置加载也留痕
+    if not _acquire_single_instance():
+        ls.get_logger().warning("SINGLE-INSTANCE 已有实例在运行，本次启动退出")
+        return
     App().run()
+
+
+def _acquire_single_instance():
+    """单实例互斥（命名 Mutex）：双实例会互抢全局热键，谁响应全看运气。
+
+    重复启动时静默退出——热键/托盘/剪贴板都由第一个实例持有，行为一致。
+    """
+    import ctypes
+    global _MUTEX_HANDLE
+    _MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(
+        None, False, "Local\\QuickTool_SingleInstance")
+    err = ctypes.windll.kernel32.GetLastError()
+    return err != 183                      # ERROR_ALREADY_EXISTS
 
 
 if __name__ == "__main__":

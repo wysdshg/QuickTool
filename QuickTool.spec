@@ -6,7 +6,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('data/mini_dict.json', 'data')],
-    hiddenimports=[],
+    # v1.7 RAG：main 里 rag.store/engine 是运行时局部 import（保启动轻量），
+    # 静态扫描抓不到，必须显式列出——否则打包版一碰 RAG 就 ImportError。
+    hiddenimports=['rag', 'rag.api', 'rag.bm25', 'rag.engine',
+                   'rag.fusion', 'rag.splitter', 'rag.store',
+                   'rag.vectors'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

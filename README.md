@@ -111,7 +111,7 @@ QuickTool/
 ├── qt/
 │   ├── winapi.py            # 纯 ctypes：全局热键 / 剪贴板 / 光标 / 托盘
 │   ├── capture.py           # 选中文本提取 + PDF 断词清洗
-│   ├── engines.py           # 5 个翻译引擎（MyMemory/Google/LLM/DeepL/离线）
+│   ├── engines.py           # 4 个翻译引擎（MyMemory/Google/LLM/离线）
 │   ├── translator.py        # 引擎调度：LRU 缓存 + 失败回退链
 │   ├── config.py            # 配置读写（%APPDATA% 或程序同目录）+ 开机自启
 │   └── ui.py                # 悬浮窗 + 设置窗口（tkinter）
@@ -298,7 +298,7 @@ Tk 不是线程安全的，两个线程**只通过 `queue.Queue` 单向通信**�
 1. **热键可能被自动顺延**（这是特性不是 bug）。新电脑上如果 `Ctrl+Q` 被微信/输入法/浏览器扩展占用，程序会自动换用候选组合并弹一条非阻塞提示，同时把结果写进配置（下次启动不再重新报）。实测在本机已有实例占用的环境下，四个默认组合全部命中 1409，程序自动落位为 `Ctrl+Alt+F1` / `Ctrl+Alt+,` / `Ctrl+Alt+Shift+Q` / `Ctrl+Alt+P`，功能全部可用；托盘菜单里也能手动改。**不要同时开两个实例**——它们会互相抢热键（本机实测 2 个实例并存时后启动的那个四个键全被顺延）。
 2. **设置是否随身带**：程序同目录有 `config.json` 就走绿色便携模式（放 U 盘最合适）；没有则读写 `%APPDATA%\QuickTool\config.json`。想把引擎/API Key/热键一起搬到新电脑，把 `config.json` 和 exe 放同一个文件夹复制过去即可。
 3. **截图翻译需要系统 OCR 语言包**：设置 → 时间和语言 → 语言 → 首选语言 → 选项 → 下载"文本识别"。新电脑没装 `en-US` 时，截图翻译会给出安装引导，**划词翻译完全不受影响**。
-4. **联网与 Key**：默认 MyMemory 需联网（免 Key）；离线词库断网可用（单词级）；DeepL / 大模型引擎需要在新电脑上能访问对应 API 且配置里有 Key。
+4. **联网与 Key**：默认 MyMemory 需联网（免 Key）；离线词库断网可用（单词级）；大模型翻译引擎需要在新电脑上能访问对应 API 且配置里有 Key。
 5. **首次运行的拦截提示**：exe 未签名，新电脑上可能遇到 SmartScreen（点"更多信息 → 仍要运行"）；个别杀软会误报 PyInstaller 单文件产物，加白名单即可。另外开机自启是写 `HKCU\...\Run` 里的**绝对路径**，换了目录或电脑后需要在设置里重新勾选一次。
 
 ### 4.11 托盘静默消失的排查与日志系统（v1.4）
@@ -475,7 +475,6 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 | 腾讯翻译君 TMT | 免费 | **500 万字符/月** | 快 | 高（大厂 SLA） | 是 | 上传 | 主力免费引擎，中文优化好 |
 | 百度翻译 | 免费 | 标准版 QPS=1，个人认证后更高 | 中 | 高 | 是 | 上传 | 需要实名认证，起步略麻烦 |
 | 阿里云机器翻译 | 免费 | 100 万字符/月 | 中 | 高 | 是 | 上传 | 阿里系生态 |
-| DeepL API Free | 免费 | 50 万字符/月 | 中（~1-2s） | 高 | 是（部分区域要信用卡） | 上传 | 英文译文质量标杆 |
 | **大模型 API**（DeepSeek / 硅基流动 / 智谱 / 通义 / Ollama） | 见下 | 智谱 `glm-4-flash` 全免费；硅基流动部分免费模型 | 中（~1-3s） | 高 | 是 | 上传（敏感内容选 Ollama） | 长句/术语/论文/上下文理解，**质量最优** |
 | **本地 Ollama** + 小模型 | 免费 | 无限制 | 慢（CPU） | 高（本地） | 否 | **完全离线** | 隐私优先、断网环境 |
 | 离线词库（内置 mini_dict / ECDICT） | 免费 | 无限制 | 瞬时 | 高 | 否 | **完全离线** | 查单词兜底，断网也有反应 |
@@ -489,7 +488,7 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 | MyMemory | ✅ 可用，`artificial intelligence is reshaping the software industry` → 人工智能正在重塑软件行业，~1.3s |
 | Google gtx | ❌ 超时（本机网络环境下不可达） |
 | 离线词库 | ✅ 瞬时，`benchmark` → n. 基准；基准测试 |
-| DeepSeek / 硅基流动 / DeepL | 端口可达（HTTP 401 = 缺 Key），配置 Key 后即可用 |
+| DeepSeek / 硅基流动 | 端口可达（HTTP 401 = 缺 Key），配置 Key 后即可用 |
 
 ### 5.3 各引擎接入配置（设置界面 → 大模型 API 或 config.json）
 
@@ -508,8 +507,6 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
   "temperature": 0.2
 }
 
-// DeepL：
-"deepl": { "api_key": "xxxx:fx", "free": true }
 
 // 引擎调度：
 "engine": "mymemory",            // 主引擎
@@ -546,7 +543,6 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
   "source_lang": "auto",
   "target_lang": "zh-CN",
   "llm": { "base_url": "", "api_key": "", "model": "deepseek-chat", "temperature": 0.2 },
-  "deepl": { "api_key": "", "free": true },
   "popup": { "theme": "dark", "alpha": 0.97, "auto_hide_ms": 0,
              "max_width": 520, "font_size": 13, "follow_cursor": true },
   "mini_button": true,                  // 拖选文字后自动弹出『译』『便』迷你按钮

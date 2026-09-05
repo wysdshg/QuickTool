@@ -141,30 +141,7 @@ class LLMEngine:
         return re.sub(r"^\s*(译文|翻译结果)[:：]\s*", "", out.strip())
 
 
-# ------------------------------------------------------------------ 4. DeepL
-class DeepLEngine:
-    name = "deepl"
-    label = "DeepL API（50 万字符/月免费）"
-    need_key = True
-
-    def translate(self, text, src, tgt, cfg):
-        cfg_deepl = cfg.get("deepl") or {}
-        key = (cfg_deepl.get("api_key") or "").strip()
-        if not key:
-            raise EngineError("未配置 DeepL API Key")
-        host = "api-free.deepl.com" if cfg_deepl.get("free", True) else "api.deepl.com"
-        data = http_form(
-            f"https://{host}/v2/translate",
-            {"text": text, "source_lang": (src or "EN").split("-")[0].upper(),
-             "target_lang": (tgt or "ZH").split("-")[0].upper()},
-            headers={"Authorization": f"DeepL-Auth-Key {key}"}, timeout=15.0)
-        try:
-            return "".join(t["text"] for t in data["translations"]).strip()
-        except Exception as exc:
-            raise EngineError(f"DeepL 返回异常：{exc}")
-
-
-# ------------------------------------------------------------------ 5. 离线兜底
+# ------------------------------------------------------------------ 4. 离线兜底
 class OfflineEngine:
     """断网 / 接口全挂时的兜底：内置高频词库。
 
@@ -237,7 +214,7 @@ class OfflineEngine:
 
 
 ENGINES = {cls.name: cls for cls in
-           (MyMemoryEngine, GoogleGtxEngine, LLMEngine, DeepLEngine, OfflineEngine)}
+           (MyMemoryEngine, GoogleGtxEngine, LLMEngine, OfflineEngine)}
 
 
 def engine_display_names():

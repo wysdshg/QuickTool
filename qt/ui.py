@@ -1377,6 +1377,7 @@ class Settings(tk.Toplevel):
         self._section_engine(inner)
         self._section_hotkey(inner)
         self._section_llm(inner)
+        self._section_rag(inner)
         self._section_ui(inner)
         self._section_footer(inner)
 
@@ -1521,6 +1522,7 @@ class Settings(tk.Toplevel):
                            ("hotkey_ocr", "截图翻译"),
                            ("hotkey_pin", "截图对照"),
                            ("hotkey_note", "置顶便签"),
+                           ("hotkey_rag", "快捷提问(RAG)"),
                            ("hotkey_settings", "打开设置"),
                            ("hotkey_quit", "退出程序")):
             var = tk.StringVar(value=self.cfg.get(key))
@@ -1528,9 +1530,11 @@ class Settings(tk.Toplevel):
             e = ttk.Entry(f, textvariable=var, width=18)
             self._row(f, label, e)
             e.bind("<KeyPress>", lambda ev=None, v=var: self._capture(ev, v))
-        tk.Label(f, text="注意：录制时全局热键也会同时触发一次，属正常现象。",
+        tk.Label(f, text="注意：录制时全局热键也会同时触发一次，属正常现象。\n"
+                         "若默认组合被其他程序占用，启动时会自动改用下方显示的备用组合。",
                  fg=self.th["sub"], bg=self.th["win"],
-                 font=("Microsoft YaHei UI", 8)).pack(anchor="w")
+                 font=("Microsoft YaHei UI", 8),
+                 justify="left", anchor="w").pack(anchor="w")
 
     def _capture(self, event=None, var=None):
         # 热键录制同样遵守铁律：销毁竞态下 Tk 可能无参调用，直接忽略即可
@@ -1582,13 +1586,6 @@ class Settings(tk.Toplevel):
                 .pack(side="left", padx=2)
 
         df = self._frame(root, "其他")
-        deepl = self.cfg.get("deepl")
-        self.deepl_key = tk.StringVar(value=deepl.get("api_key", ""))
-        self.deepl_free = tk.BooleanVar(value=deepl.get("free", True))
-        self._row(df, "DeepL Key", ttk.Entry(df, textvariable=self.deepl_key,
-                                             width=40, show="*"))
-        ttk.Checkbutton(df, text="使用 DeepL Free 版（api-free.deepl.com）",
-                        variable=self.deepl_free).pack(anchor="w", pady=2)
         self.autostart = tk.BooleanVar(value=bool(self.cfg.get("autostart")))
         ttk.Checkbutton(df, text="开机自动启动（写入 HKCU Run，无需管理员）",
                         variable=self.autostart).pack(anchor="w", pady=2)
@@ -1607,6 +1604,44 @@ class Settings(tk.Toplevel):
     def _apply_preset(self, url, model):
         self.llm_vars["base_url"].set(url)
         self.llm_vars["model"].set(model)
+
+    # ------------------------------------------------------------ RAG（v1.7）
+    def _section_rag(self, root):
+        f = self._frame(root, "RAG 快捷问答（本地知识库检索 · 实验）")
+        api = self.cfg.get("rag.api") or {}
+        self.rag_vars = {}
+        for key, label, width in (("base_url", "Base URL", 46),
+                                  ("api_key", "API Key", 46),
+                                  ("chat_model", "生成模型", 30),
+                                  ("embed_model", "向量模型", 30),
+                                  ("rerank_model", "重排模型", 30)):
+            v = tk.StringVar(value=api.get(key, ""))
+            self.rag_vars[key] = v
+            self._row(f, label, ttk.Entry(f, textvariable=v, width=width,
+                                          show="*" if key == "api_key" else ""))
+        presets = tk.Frame(f, bg=self.th["win"])
+        presets.pack(fill="x", pady=2)
+        tk.Label(presets, text="预设", width=12, anchor="w", bg=self.th["win"],
+                 font=("Microsoft YaHei UI", 9)).pack(side="left")
+        ttk.Button(presets, text="硅基流动（免费档）", width=16,
+                   command=self._apply_rag_preset).pack(side="left", padx=2)
+        ttk.Button(presets, text="打开文档库…", width=14,
+                   command=lambda: getattr(self.app, "open_kb_manager",
+                                           lambda: None)()).pack(side="left", padx=2)
+        tk.Label(f, text="API Key 落盘自动加密（DPAPI，绑定本机与当前账户）；"
+                         "平台无重排/向量端点时对应模型留空即可",
+                 fg=self.th["sub"], bg=self.th["win"],
+                 font=("Microsoft YaHei UI", 8)).pack(anchor="w", padx=12, pady=(2, 2))
+        tk.Label(f, text="用法：选中术语按 Ctrl+Alt+R 提问（可改问法追问）；"
+                         "先在『打开文档库』导入 .txt/.md 资料",
+                 fg=self.th["sub"], bg=self.th["win"],
+                 font=("Microsoft YaHei UI", 8)).pack(anchor="w", padx=12, pady=(0, 4))
+
+    def _apply_rag_preset(self):
+        self.rag_vars["base_url"].set("https://api.siliconflow.cn/v1")
+        self.rag_vars["chat_model"].set("Qwen/Qwen3-8B")
+        self.rag_vars["embed_model"].set("BAAI/bge-m3")
+        self.rag_vars["rerank_model"].set("BAAI/bge-reranker-v2-m3")
 
     # ------------------------------------------------------------ 界面
     def _section_ui(self, root):
@@ -1664,8 +1699,8 @@ class Settings(tk.Toplevel):
         cfg.set("target_lang", self.tgt_var.get())
         for k, v in self.llm_vars.items():
             cfg.set(f"llm.{k}", v.get().strip())
-        cfg.set("deepl.api_key", self.deepl_key.get().strip())
-        cfg.set("deepl.free", self.deepl_free.get())
+        for k, v in self.rag_vars.items():
+            cfg.set(f"rag.api.{k}", v.get().strip())
         cfg.set("autostart", self.autostart.get())
         cfg.set("enable_tray", self.tray.get())
         cfg.set("ocr_lang", self.ocr_lang_var.get())

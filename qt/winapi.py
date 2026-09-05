@@ -12,6 +12,7 @@
   - pywin32 体积大（~30MB），PyInstaller 打包后明显变胖；
   - ctypes + stdlib 打包后 exe 可以压到 10MB 以内。
 """
+import base64
 import ctypes
 import ctypes.wintypes as wt
 import threading
@@ -1134,3 +1135,75 @@ def grab_screen_bmp(x, y, w, h):
         gdi32.DeleteObject(bmp)
         gdi32.DeleteDC(mem)
         user32.ReleaseDC(None, hdc)
+
+
+# ---------------------------------------------------------------- DPAPI 密钥保护
+# API Key 落盘保护（v1.7 RAG）：CryptProtectData 用「当前 Windows 账户」凭据
+# 加密，密文绑定本机 + 本用户 —— config.json 被拷走 / 分享 / 误传仓库都解不开。
+# 零依赖（crypt32），个人桌面工具对 API Key 性价比最高的防线。
+# 局限（有意接受）：不防同机同用户的恶意进程（可调同一 API 解密，等价于读进程
+# 内存）；换机 / 换账户后解不开，需在设置页重新填写密钥。
+# P2-3 约定：本区新增 API（crypt32.* / LocalFree）只在此声明一次。
+
+_CRYPTPROTECT_UI_FORBIDDEN = 0x1
+
+crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wt.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+crypt32.CryptProtectData.restype = wt.BOOL
+crypt32.CryptProtectData.argtypes = [
+    ctypes.POINTER(_DATA_BLOB), LPWSTR, ctypes.POINTER(_DATA_BLOB),
+    ctypes.c_void_p, ctypes.c_void_p, wt.DWORD, ctypes.POINTER(_DATA_BLOB)]
+crypt32.CryptUnprotectData.restype = wt.BOOL
+crypt32.CryptUnprotectData.argtypes = [
+    ctypes.POINTER(_DATA_BLOB), ctypes.POINTER(LPWSTR),
+    ctypes.POINTER(_DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p,
+    wt.DWORD, ctypes.POINTER(_DATA_BLOB)]
+kernel32.LocalFree.restype = HANDLE
+kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+
+
+def _blob_in(data: bytes) -> _DATA_BLOB:
+    if not data:
+        return _DATA_BLOB(0, None)
+    buf = ctypes.create_string_buffer(data, len(data))
+    return _DATA_BLOB(len(data),
+                      ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte)))
+
+
+def dpapi_encrypt(plain: str) -> str:
+    """用当前 Windows 账户凭据加密字符串，返回 base64（可安全落盘/入仓库）。
+
+    密文仅能在本机、本账户下用 dpapi_decrypt 解回；其它账户/机器一律失败。
+    """
+    blob_in = _blob_in(plain.encode("utf-8"))
+    blob_out = _DATA_BLOB()
+    if not crypt32.CryptProtectData(ctypes.byref(blob_in), None, None, None,
+                                    None, _CRYPTPROTECT_UI_FORBIDDEN,
+                                    ctypes.byref(blob_out)):
+        raise OSError(f"DPAPI 加密失败：WinError {ctypes.get_last_error()}")
+    try:
+        raw = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        return base64.b64encode(raw).decode("ascii")
+    finally:
+        kernel32.LocalFree(blob_out.pbData)
+
+
+def dpapi_decrypt(b64: str) -> str:
+    """解密 dpapi_encrypt 产物。密文非本机/本账户加密时抛 OSError。"""
+    raw = base64.b64decode(b64.encode("ascii"))
+    blob_in = _blob_in(raw)
+    blob_out = _DATA_BLOB()
+    if not crypt32.CryptUnprotectData(ctypes.byref(blob_in), None, None, None,
+                                      None, _CRYPTPROTECT_UI_FORBIDDEN,
+                                      ctypes.byref(blob_out)):
+        raise OSError(f"DPAPI 解密失败：WinError {ctypes.get_last_error()}")
+    try:
+        return ctypes.string_at(blob_out.pbData, blob_out.cbData).decode("utf-8")
+    finally:
+        kernel32.LocalFree(blob_out.pbData)
