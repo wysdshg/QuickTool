@@ -18,7 +18,8 @@ from .fusion import generate_variants, rrf_merge
 
 _SYS = ("你是耐心且通俗的学习助手。只依据下方【参考资料】回答用户问题；"
         "资料未覆盖到的，先明说“资料未提及”，再用一两句常识补充。"
-        "回答口语化、分要点，控制在 300 字内，不要输出 Markdown 符号。"
+        "回答口语化、分要点，把机制和细节讲透，通常 500~900 字；"
+        "用户明确要求精简时才从简。不要输出 Markdown 符号。"
         "资料中的代码块是参考实现：回答以原理讲解为主，"
         "仅当用户明确要实现或代码时才引用代码。")
 
@@ -188,7 +189,7 @@ class RagEngine:
         user_msg += f"\n\n【参考资料】\n{context}"
         messages = [{"role": "system", "content": _SYS},
                     {"role": "user", "content": user_msg}]
-        answer = self.api().chat(messages, max_tokens=800,
+        answer = self.api().chat(messages, max_tokens=1500,
                                  temperature=0.3, on_delta=on_delta)
         if not answer:
             raise RagApiError("模型未返回内容，请重试")
