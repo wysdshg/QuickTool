@@ -5,12 +5,16 @@ QaWindow：置顶无边框小窗（复用便签窗的窗口骨架）。顶部输
 经 app.q 队列回主线程逐段渲染——窗口方法只在主线程被调用）。
 多个问答窗可并存（一个术语一个窗），方便横向对比。
 
-KbManager：文档库管理（导入 .txt/.md、删除、清空、看向量化进度）。向量化是
-懒触发的：首次提问时 engine 自动补算缺失向量，这里只展示进度。
+KbManager：文档库管理（导入 .txt/.md/.pdf、删除、清空、看向量化进度）。
+向量化是懒触发的：首次提问时 engine 自动补算缺失向量，这里只展示进度。
+PDF 导入走后台线程（逐页提取 + 进度），解析完回主线程入库——sqlite 连接
+不跨线程，Tk 对象更不跨线程，靠本窗私有 _pdfq 队列 + after 轮询交接。
 
 线程约定：本模块只允许主线程触碰 Tk 对象；RAG 的联网在 app 的 RAG worker。
 """
 import os
+import queue
+import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -482,7 +486,12 @@ class QaWindow:
 
 # ============================================================ 文档库管理
 class KbManager(tk.Toplevel):
-    """文档库管理窗：导入 .txt/.md、删除、清空、查看向量化进度。"""
+    """文档库管理窗：导入 .txt/.md/.pdf、删除、清空、查看向量化进度。
+
+    PDF 导入（v1.7）：pypdf 逐页提取在后台线程跑（进度经 _pdfq 回主线程），
+    解析完拼成带「第 N 页」标题链的 markdown 入库，并做质量体检——
+    扫描版（无文字层）与 CID 乱码 PDF 当场提示，不让坏文本静默入库。
+    """
 
     def __init__(self, app):
         super().__init__(app.root)
@@ -506,7 +515,7 @@ class KbManager(tk.Toplevel):
 
     def _build(self):
         th = self.th
-        head = tk.Label(self, text="把学习资料（.txt / .md）导入后即可用快捷提问检索。"
+        head = tk.Label(self, text="把学习资料（.txt / .md / .pdf）导入后即可用快捷提问检索。"
                                    "向量在首次提问时自动补齐。",
                         font=(FONT_CN, 8), fg=th["sub"], bg=th["win"],
                         anchor="w", justify="left")
@@ -556,11 +565,37 @@ class KbManager(tk.Toplevel):
 
     # ------------------------------------------------------------ 动作
     def import_files(self):
+        """导入 .txt/.md（同步，秒回）与 .pdf（后台线程逐页提取 + 进度）。"""
         paths = filedialog.askopenfilenames(
             parent=self, title="选择要导入的学习资料",
-            filetypes=[("文本/笔记", "*.txt *.md"), ("所有文件", "*.*")])
+            filetypes=[("文本/笔记/PDF", "*.txt *.md *.pdf"),
+                       ("所有文件", "*.*")])
         if not paths:
             return
+        pdfs = [p for p in paths if p.lower().endswith(".pdf")]
+        texts = [p for p in paths if not p.lower().endswith(".pdf")]
+        added = skipped = failed = 0
+        notes = []
+        if texts:
+            added, skipped, failed, notes = self._import_text_files(texts)
+        pdf_jobs = 0
+        if pdfs:
+            pdf_jobs = self._import_pdfs_async(pdfs)
+        if added or skipped or failed:
+            self.refresh()
+            msg = f"新增 {added}，跳过重复 {skipped}"
+            if failed:
+                msg += f"，失败 {failed}"
+            if pdf_jobs:
+                msg += f"；{pdf_jobs} 个 PDF 后台解析中…"
+            self._toast("导入完成", msg)
+        elif pdf_jobs:
+            self._toast("PDF 导入", f"{pdf_jobs} 个 PDF 后台解析中…")
+        if notes:
+            self._toast("部分文件失败", "\n".join(notes[:5]))
+
+    def _import_text_files(self, paths):
+        """txt/md 同步导入（原 v1.7.0 逻辑），返回 (added, skipped, failed, notes)。"""
         store = self._store()
         added = skipped = failed = 0
         notes = []
@@ -587,12 +622,115 @@ class KbManager(tk.Toplevel):
                 added += 1
             else:
                 skipped += 1
+        return added, skipped, failed, notes
+
+    # ---------------- PDF：后台线程逐页提取，主线程入库 ----------------
+    def _import_pdfs_async(self, paths):
+        """PDF 走后台线程（pypdf 提取），经 _pdfq 回主线程入库。返回任务数。"""
+        if not self._pdf_ready():
+            return 0
+        self._pdf_pending = getattr(self, "_pdf_pending", 0) + len(paths)
+        self._pdf_stats = getattr(self, "_pdf_stats",
+                                  {"added": 0, "skipped": 0, "failed": 0,
+                                   "warns": []})
+        if not hasattr(self, "_pdfq"):
+            self._pdfq = queue.Queue()
+            self._poll_pdf()
+        for p in paths:
+            name = os.path.basename(p)
+            t = threading.Thread(target=self._pdf_worker,
+                                 args=(name, p, self._pdfq), daemon=True)
+            t.start()
+        self.summary.configure(text=f"PDF 后台解析中（{self._pdf_pending} 个）…")
+        return len(paths)
+
+    def _pdf_ready(self):
+        """pypdf 缺失时给指引（唯一第三方依赖例外，打包版内置）。"""
+        from rag import pdftext
+        if pdftext.HAVE_PYPDF:
+            return True
+        self._toast("PDF 支持不可用", pdftext._INSTALL_HINT)
+        return False
+
+    @staticmethod
+    def _pdf_worker(name, path, q):
+        """后台线程：逐页提取，进度/结果/异常全走队列，不碰 Tk/sqlite。"""
+        from rag import pdftext
+        try:
+            pages = pdftext.extract_pdf(
+                path, on_progress=lambda i, n, note:
+                    q.put(("progress", (name, i, n, note))))
+            q.put(("done", (name, pages)))
+        except Exception as exc:
+            q.put(("error", (name, str(exc))))
+
+    def _poll_pdf(self):
+        """主线程轮询 _pdfq：刷进度 / 入库 / 汇总 toast。
+
+        窗口已关（_pdf_closed）就停止轮询——after 定时器挂在 Tcl 解释器上，
+        destroy 后仍会触发，不守卫会对已销毁 widget 抛 TclError（v1.6.4 同款坑）。
+        """
+        if getattr(self, "_pdf_closed", False):
+            return
+        if not hasattr(self, "_pdfq"):
+            return
+        try:
+            while True:
+                kind, payload = self._pdfq.get_nowait()
+                if kind == "progress":
+                    name, i, n, note = payload
+                    self.summary.configure(
+                        text=f"解析 {name}… 第 {i}/{n} 页"
+                             + (f"（{note}）" if note else ""))
+                elif kind == "done":
+                    self._pdf_ingest(*payload)
+                elif kind == "error":
+                    self._pdf_stats["failed"] += 1
+                    self._pdf_stats["warns"].append(f"{payload[0]}：{payload[1]}")
+                    self._pdf_pending -= 1
+                    self._pdf_flush()
+        except queue.Empty:
+            pass
+        if getattr(self, "_pdf_pending", 0) > 0 or not self._pdfq.empty():
+            self.after(60, self._poll_pdf)
+        else:
+            self.refresh()          # 恢复正常摘要行（N 篇文档 / 库为空）
+
+    def _pdf_ingest(self, name, pages):
+        """主线程：markdown 拼装 + 质量体检 + 入库（sqlite 留在主线程）。"""
+        from rag import pdftext
+        q = pdftext.text_quality(name, pages)
+        md = pdftext.to_markdown(name, pages)
+        if not md.strip():
+            self._pdf_stats["skipped"] += 1
+        else:
+            try:
+                r = self._store().add_document(name, md, source="本地导入")
+                if r.get("added"):
+                    self._pdf_stats["added"] += 1
+                else:
+                    self._pdf_stats["skipped"] += 1
+            except Exception as exc:
+                self._pdf_stats["failed"] += 1
+                self._pdf_stats["warns"].append(f"{name}：入库失败 {exc}")
+        if q["verdict"] != "good":
+            self._pdf_stats["warns"].append(f"{name}：{q['reason']}")
+        self._pdf_pending -= 1
         self.refresh()
-        self._toast("导入完成",
-                    f"新增 {added}，跳过重复 {skipped}"
-                    + (f"，失败 {failed}" if failed else ""))
-        if notes:
-            self._toast("部分文件失败", "\n".join(notes[:5]))
+        self._pdf_flush()
+
+    def _pdf_flush(self):
+        """全部 PDF 处理完 → 汇总 toast（含质量体检提示）。"""
+        if self._pdf_pending > 0:
+            return
+        st = self._pdf_stats
+        msg = f"PDF 完成：新增 {st['added']}，跳过重复 {st['skipped']}"
+        if st["failed"]:
+            msg += f"，失败 {st['failed']}"
+        self._toast("PDF 导入完成", msg)
+        if st["warns"]:
+            self._toast("PDF 质量提示", "\n".join(st["warns"][:5]))
+        self._pdf_stats = {"added": 0, "skipped": 0, "failed": 0, "warns": []}
 
     def delete_selected(self):
         sel = self.listbox.curselection()
@@ -634,6 +772,7 @@ class KbManager(tk.Toplevel):
             q.put(("toast", (title, body)))
 
     def close(self):
+        self._pdf_closed = True          # 停 _poll_pdf 轮询（后台线程自然收尾）
         if getattr(self.app, "kb_mgr", None) is self:
             self.app.kb_mgr = None
         try:

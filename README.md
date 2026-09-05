@@ -413,6 +413,9 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **A 凭据中心（多厂商生成切换）**：设置页「凭据中心 · 大模型」统一管理五家 API Key——硅基流动 / 魔搭 ModelScope / 智谱 GLM / DeepSeek / 自定义（OpenAI 兼容）；生成服务商下拉切换，翻译 LLM 引擎与 RAG 回答生成共用所选厂商（`llm.provider`），可填模型覆盖（`llm.model`）或留空用厂商默认；向量/重排检索固定硅基流动。密钥字段 save/load 全程 DPAPI 加密（仅本机本账户可解，落盘无明文）。test1 阶段旧配置（`rag.api.*` / `llm.{base_url,api_key,model}` 直填）启动一次性迁移到新结构（幂等，可重复载入不抖动）。RAG 检索纯本地（sqlite FTS5 + bge-m3 向量，零第三方依赖），引擎五阶段：RAG-Fusion → BM25+向量双路 → RRF → Rerank → 流式生成。
 - 验证：smoke **238/238**（新增 6.24 凭据中心：迁移幂等 / 端点矩阵 / Settings 保存落盘；6.19/6.21 随新结构改造）、e2e 14/14。
 
+- **PDF 文档库导入（v1.7）**：文档库支持 `.pdf`（引入本项目**唯一第三方依赖例外 pypdf**，纯 Python 零原生扩展——中文 PDF 的 CID 字体必须解 ToUnicode 才能还原中文，实测零依赖手写解流对中文 100% 乱码）。PDF 走后台线程逐页提取（进度实时显示），拼成带「第 N 页」标题链的 markdown 入库（检索来源可定位到页），导入完成做**质量体检**：扫描版（无文字层）、CID 乱码（错映射成泰文/老挝文等，靠异常脚本占比检测，U+FFFD 探不出来）、图片页偏多（每页均字数过低）三类问题当场提示。pypdf 可选依赖经三方实测（源码/全量打包/瘦身打包，6 样本提取 SHA1 逐字节一致）不参与 extract_text，spec 已 excludes 瘦身（**不能排 xml**——pypdf.xmp 强依赖；**不能排 sqlite3**——知识库在用），exe 12.5MB → 24MB。打包机需 `py -3.12 -m pip install pypdf` 或设 `PYPDF_PATH` 指向含 pypdf 的 site-packages。
+- 验证：smoke **249/249**（新增 6.25：提取/进度/标题链/体检四态/KbManager 后台全链路；pypdf 缺失时经 `PYPDF_PATH` 兜底、再缺失 SKIP）、e2e 14/14。
+
 **v1.6.10 三项 P2 技术债清理（P2-1~P2-3）**（2026-09-03）：
 - **P2-1 截图 OCR 临时文件竞态修复（唯一有真实 bug 的一项）**：截图翻译每次选区改写唯一临时文件（`tempfile.mkstemp` 前缀 `qt_ocr_`，取代固定名 `QuickTool_ocr.bmp`）——此前快速连发两次截图（第一次的 OCR 任务尚未开跑、第二次已覆盖写同一路径）会让第一次读到第二次的图、重复出结果；OCR 任务结束按各自路径删除临时文件（含 no_lang 早退路径走 finally），不再残留 temp。
 - **P2-2 死代码清理**：删除回搜功能（v1.6.5 移除）遗留的 `send_ctrl_f` / `send_ctrl_v` / `set_foreground` / `quit_message_loop` 四个零引用函数（-35 行）；`get_foreground_window` 是活代码（来源窗口记录，main.py 3 处调用）保留。
