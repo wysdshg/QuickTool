@@ -32,26 +32,54 @@ DEFAULTS = {
     "source_lang": "auto",
     "target_lang": "zh-CN",
 
-    # 大模型（OpenAI 兼容）：DeepSeek / 硅基流动 / 智谱 / 通义 / Ollama / OpenAI 均可用
-    "llm": {
-        "base_url": "https://api.deepseek.com/v1",
-        "api_key": "",
-        "model": "deepseek-chat",
-        "temperature": 0.2,
-    },
-    # ---------------- RAG 快捷问答（v1.7：本地知识库检索 + 大模型生成） ----------------
-    # 检索/索引全部本地（sqlite FTS5 + 可选云端 bge-m3 向量），零第三方依赖；
-    # 生成/向量/重排走 OpenAI 兼容 API，默认硅基流动免费档，可自由换服务商。
-    "rag": {
-        "api": {
+    # ---------------- 凭据中心（v1.7：翻译 LLM 与 RAG 生成共用一家厂商的 Key） ----------------
+    # 各家存 base_url / api_key / 默认模型。api_key 落盘自动 DPAPI 密文
+    # （_SECRET_FIELDS），内存保持明文。模型可各换，生成侧切换见 llm.provider。
+    "providers": {
+        "siliconflow": {            # 检索专用：向量/重排固定用这一家（embed/rerank）
             "base_url": "https://api.siliconflow.cn/v1",
-            "api_key": "",          # 落盘为 DPAPI 密文（见 _SECRET_FIELDS），内存为明文
+            "api_key": "",
             "chat_model": "Qwen/Qwen3-8B",
             "embed_model": "BAAI/bge-m3",
             "rerank_model": "BAAI/bge-reranker-v2-m3",
-            "timeout": 30,          # 常规请求超时（秒）
-            "thinking_off": True,   # Qwen3 关思考模式：提速 ~4 倍（实测 20.9s->5.4s）
+            "thinking": True,       # 支持顶层 enable_thinking=False（Qwen3 提速 ~4 倍）
         },
+        "modelscope": {             # 魔搭社区（每日有免费额度）
+            "base_url": "https://api-inference.modelscope.cn/v1",
+            "api_key": "",
+            "chat_model": "Qwen/Qwen3-8B",
+            "thinking": True,
+        },
+        "zhipu": {                  # 智谱（glm 免费档；未知字段可能报错 → 不带 thinking 开关）
+            "base_url": "https://open.bigmodel.cn/api/paas/v4",
+            "api_key": "",
+            "chat_model": "glm-4.5-flash",
+            "thinking": False,
+        },
+        "deepseek": {
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "",
+            "chat_model": "deepseek-chat",
+            "thinking": False,
+        },
+        "custom": {                 # 自定义 OpenAI 兼容端点（需自填 base_url/模型）
+            "base_url": "",
+            "api_key": "",
+            "chat_model": "",
+            "thinking": False,
+        },
+    },
+    # 生成侧选择（大模型翻译 + RAG 问答生成共用）：
+    "llm": {
+        "provider": "siliconflow",  # 生成厂商 = providers 键名（siliconflow/modelscope/zhipu/deepseek/custom）
+        "model": "",                # 覆盖模型；留空 = 用所选厂商默认 chat_model
+        "temperature": 0.2,
+        "timeout": 30,              # 常规请求超时（秒）
+    },
+    # ---------------- RAG 快捷问答（v1.7：本地知识库检索 + 大模型生成） ----------------
+    # 检索/索引全部本地（sqlite FTS5 + 可选云端 bge-m3 向量），零第三方依赖；
+    # 生成走 llm.provider 所选厂商；向量/重排固定硅基流动（providers.siliconflow）。
+    "rag": {
         "kb": {
             "dir": "",              # 留空 = 与 config.json 同目录的 kb\（便携模式随 exe 走）
             "chunk_chars": 500,     # chunk 目标字符数（中文按字符）
@@ -97,8 +125,20 @@ _LANG_OPTIONS = [
 # 落盘自动 DPAPI 加密的密钥字段（点分路径）。值在内存中保持明文（引擎/设置页
 # 直接读），save() 时替换为 "__dpapi__:<base64>" 密文，load() 时自动解回明文。
 # 旧版明文配置零手动迁移：load 读到明文原样保留，首次 save 即自动转密文。
-_SECRET_FIELDS = ("llm.api_key", "rag.api.api_key")
+_SECRET_FIELDS = ("providers.siliconflow.api_key", "providers.modelscope.api_key",
+                  "providers.zhipu.api_key", "providers.deepseek.api_key",
+                  "providers.custom.api_key")
 _ENC_PREFIX = "__dpapi__:"
+
+# 凭据中心厂商清单（顺序即设置页/下拉顺序）。label 供 UI 展示。
+PROVIDER_ORDER = ("siliconflow", "modelscope", "zhipu", "deepseek", "custom")
+PROVIDER_LABELS = {
+    "siliconflow": "硅基流动",
+    "modelscope": "魔搭 ModelScope",
+    "zhipu": "智谱 GLM",
+    "deepseek": "DeepSeek",
+    "custom": "自定义（OpenAI 兼容）",
+}
 
 
 def _portable_path():
@@ -119,7 +159,10 @@ class Config:
         self._lock = threading.RLock()
         self.path = self._resolve_path()
         self.data = json.loads(json.dumps(DEFAULTS))
+        self._dirty = False          # load 中迁移过旧结构 → 构造后落盘一次
         self.load()
+        if self._dirty:
+            self.save()
 
     @staticmethod
     def _resolve_path():
@@ -136,14 +179,64 @@ class Config:
                 base[k] = v
 
     def load(self):
+        disk = {}
         if os.path.isfile(self.path):
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
-                    self._merge(self.data, json.load(f))
+                    disk = json.load(f)
             except Exception:
-                pass            # 配置坏了就用默认值，绝不让程序起不来
+                disk = {}           # 配置坏了就用默认值，绝不让程序起不来
+        if self._migrate_disk_v170(disk):
+            self._dirty = True
+        self._merge(self.data, disk)
         self._decrypt_secrets()  # "__dpapi__:" 密文解回明文（失败保留原值）
         return self.data
+
+    # ------------------------------------------------------------------ 迁移
+    def _migrate_disk_v170(self, disk):
+        """v1.7.0-test1 → v1.7.0：旧结构一次性迁移（只改磁盘原样 dict）。
+
+        - rag.api.*（test1 阶段 RAG 全走硅基流动）→ providers.siliconflow.*
+        - llm.{base_url,api_key,model}（旧大模型翻译直填）→ providers.custom.*，
+          并把 llm.provider 指向 custom（无法推断原厂商，原样保留最稳）
+        旧字段无论有无值都删除，避免 merge 进新结构形成死配置。
+        """
+        if not isinstance(disk, dict):
+            return False
+        dirty = False
+        # 1) rag.api → providers.siliconflow
+        rag = disk.get("rag")
+        if isinstance(rag, dict) and isinstance(rag.get("api"), dict):
+            old = rag["api"]
+            if old.get("api_key"):
+                sf = disk.setdefault("providers", {}).setdefault(
+                    "siliconflow", {})
+                for k in ("api_key", "base_url", "chat_model",
+                          "embed_model", "rerank_model"):
+                    if old.get(k):
+                        sf.setdefault(k, old[k])
+                # thinking_off=True（默认）表示该厂商支持 enable_thinking
+                # 参数 → 新字段 thinking=True
+                sf["thinking"] = bool(old.get("thinking_off", True))
+            del rag["api"]
+            dirty = True
+        # 2) llm 直填段 → providers.custom（仅当磁盘仍是旧结构：
+        #    存在 base_url/api_key 键才是旧直填特征，新结构只有 provider 等）
+        llm = disk.get("llm")
+        if isinstance(llm, dict) and \
+                ("api_key" in llm or "base_url" in llm):
+            if llm.get("api_key"):
+                cu = disk.setdefault("providers", {}).setdefault("custom", {})
+                if llm.get("base_url"):
+                    cu.setdefault("base_url", llm["base_url"])
+                if llm.get("model"):
+                    cu.setdefault("chat_model", llm["model"])
+                cu.setdefault("api_key", llm["api_key"])
+                llm["provider"] = "custom"
+            for k in ("base_url", "api_key", "model"):
+                llm.pop(k, None)
+            dirty = True
+        return dirty
 
     def save(self):
         with self._lock:
@@ -216,6 +309,43 @@ class Config:
             for part in parts[:-1]:
                 node = node.setdefault(part, {})
             node[parts[-1]] = value
+
+    # ------------------------------- 凭据中心辅助（v1.7） -------------------------------
+    def provider_cfg(self, name=None):
+        """取某厂商配置段（dict）；name 缺省 = 当前生成厂商（llm.provider）。
+
+        UI/引擎/API 统一走这里，避免各写各的点分路径导致取错。
+        """
+        if not name:
+            name = self.get("llm.provider") or "siliconflow"
+        prov = self.get("providers") or {}
+        if name not in prov:                 # 非法/旧值兜底，不抛错
+            name = "siliconflow"
+        return prov.get(name) or {}
+
+    def chat_ep(self):
+        """生成侧端点三元组 (base_url, api_key, model)。
+
+        model = llm.model 覆盖 > 厂商默认 chat_model。空串表示未配。
+        """
+        prov = self.provider_cfg()
+        base = (prov.get("base_url") or "").strip().rstrip("/")
+        key = (prov.get("api_key") or "").strip()
+        model = (self.get("llm.model") or "").strip() or \
+            (prov.get("chat_model") or "").strip()
+        return base, key, model
+
+    def retrieval_ep(self):
+        """检索端点三元组 (base_url, api_key, embed_model)。
+
+        向量/重排固定硅基流动——embed 与 rerank 同 key，rerank 端点与 embed
+        同 base；rerank 模型单独从 siliconflow 段取。
+        """
+        sf = (self.get("providers") or {}).get("siliconflow") or {}
+        base = (sf.get("base_url") or "").strip().rstrip("/")
+        key = (sf.get("api_key") or "").strip()
+        model = (sf.get("embed_model") or "BAAI/bge-m3").strip()
+        return base, key, model
 
     # ------------------------------- 开机自启 -------------------------------
     def apply_autostart(self, enable=None):

@@ -407,6 +407,12 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **修复**：拖选结束先用**按下点所在窗口**判定再决定是否抓词——`is_console_window`（conhost/Windows Terminal/mintty 类名+进程名）与 `is_overlay_window`（topmost+盖满屏的截图遮罩特征）命中即跳过并记 `DRAG-SKIP reason=console|overlay`。正常浏览器/编辑器拖选完全不受影响。热键 Ctrl+Q/Ctrl+Alt+N 路径本次未动。
 - 验证：smoke **140/140**（新增 6.13 节 11 项：控制台类名/进程名判定、遮罩几何判定、_handle_drag_end 集成不触发抓词）、e2e 14/14×2。
 
+**v1.7.0 RAG 快捷问答全链 + 凭据中心**（2026-09）：
+- **C 弹框问答**：选中文字按 `Ctrl+Alt+Y`（被占自动顺延）→ 置顶问答窗，输入问题回车才发送，选中内容作为「背景」随请求注入（只进生成、不进检索——fusion 变体/rerank 的 query 恒为用户问题）；发送后输入框清空、弹窗自动抢输入焦点。可用 `Ctrl+Alt+N` 钉便签同款交互复用（单窗口累积、缩放、位置记忆一致）。
+- **B DeepL 移除**：DeepL 官方接口国内不可达，翻译引擎收敛为 MyMemory / GoogleGTX / 大模型 / 离线词库四家。
+- **A 凭据中心（多厂商生成切换）**：设置页「凭据中心 · 大模型」统一管理五家 API Key——硅基流动 / 魔搭 ModelScope / 智谱 GLM / DeepSeek / 自定义（OpenAI 兼容）；生成服务商下拉切换，翻译 LLM 引擎与 RAG 回答生成共用所选厂商（`llm.provider`），可填模型覆盖（`llm.model`）或留空用厂商默认；向量/重排检索固定硅基流动。密钥字段 save/load 全程 DPAPI 加密（仅本机本账户可解，落盘无明文）。test1 阶段旧配置（`rag.api.*` / `llm.{base_url,api_key,model}` 直填）启动一次性迁移到新结构（幂等，可重复载入不抖动）。RAG 检索纯本地（sqlite FTS5 + bge-m3 向量，零第三方依赖），引擎五阶段：RAG-Fusion → BM25+向量双路 → RRF → Rerank → 流式生成。
+- 验证：smoke **238/238**（新增 6.24 凭据中心：迁移幂等 / 端点矩阵 / Settings 保存落盘；6.19/6.21 随新结构改造）、e2e 14/14。
+
 **v1.6.10 三项 P2 技术债清理（P2-1~P2-3）**（2026-09-03）：
 - **P2-1 截图 OCR 临时文件竞态修复（唯一有真实 bug 的一项）**：截图翻译每次选区改写唯一临时文件（`tempfile.mkstemp` 前缀 `qt_ocr_`，取代固定名 `QuickTool_ocr.bmp`）——此前快速连发两次截图（第一次的 OCR 任务尚未开跑、第二次已覆盖写同一路径）会让第一次读到第二次的图、重复出结果；OCR 任务结束按各自路径删除临时文件（含 no_lang 早退路径走 finally），不再残留 temp。
 - **P2-2 死代码清理**：删除回搜功能（v1.6.5 移除）遗留的 `send_ctrl_f` / `send_ctrl_v` / `set_foreground` / `quit_message_loop` 四个零引用函数（-35 行）；`get_foreground_window` 是活代码（来源窗口记录，main.py 3 处调用）保留。
@@ -678,4 +684,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTool v1.6.10 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTool v1.7.0 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*

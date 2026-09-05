@@ -10,6 +10,7 @@ from tkinter import font as tkfont, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from . import winapi as wa
+from .config import PROVIDER_LABELS, PROVIDER_ORDER
 from .engines import ENGINES, engine_display_names
 
 FONT_CN = "Microsoft YaHei UI"
@@ -1378,6 +1379,7 @@ class Settings(tk.Toplevel):
         self._section_hotkey(inner)
         self._section_llm(inner)
         self._section_rag(inner)
+        self._section_misc(inner)
         self._section_ui(inner)
         self._section_footer(inner)
 
@@ -1560,31 +1562,85 @@ class Settings(tk.Toplevel):
         var.set("+".join(mods + [k]))
         return "break"
 
-    # ------------------------------------------------------------ 大模型
+    # ------------------------------------------------------------ 凭据中心
     def _section_llm(self, root):
-        f = self._frame(root, "大模型 API（OpenAI 兼容）")
-        llm = self.cfg.get("llm")
-        self.llm_vars = {}
-        for key, label, width in (("base_url", "Base URL", 46),
-                                  ("api_key", "API Key", 46),
-                                  ("model", "模型名", 24)):
-            v = tk.StringVar(value=llm.get(key, ""))
-            self.llm_vars[key] = v
-            self._row(f, label, ttk.Entry(f, textvariable=v, width=width,
-                                          show="*" if key == "api_key" else ""))
+        """凭据中心：五家厂商 Key 统一填写（翻译 LLM 与 RAG 生成共用）。
+
+        - 生成服务商：翻译 + RAG 问答生成走这一家（llm.provider）
+        - 模型覆盖：留空用厂商默认 chat_model（可填魔搭 Qwen3-8B-flash-next 等）
+        - 各厂商 API Key：落盘自动 DPAPI 加密（_SECRET_FIELDS）
+        - 检索（embed/rerank）固定硅基流动，Key 就是「硅基流动」那一行
+        """
+        f = self._frame(root, "凭据中心 · 大模型（翻译 / 问答共用 Key）")
+        providers = self.cfg.get("providers") or {}
+        llm = self.cfg.get("llm") or {}
+        cur = llm.get("provider") or "siliconflow"
+        if cur not in PROVIDER_ORDER:
+            cur = "siliconflow"
+        self._lab2key = {PROVIDER_LABELS[k]: k for k in PROVIDER_ORDER}
+        self.gen_provider_var = tk.StringVar(value=PROVIDER_LABELS[cur])
+        self._row(f, "生成服务商",
+                  ttk.Combobox(f, textvariable=self.gen_provider_var,
+                               values=[PROVIDER_LABELS[k] for k in PROVIDER_ORDER],
+                               state="readonly", width=20),
+                  "翻译与 RAG 生成共用此家")
+        self.llm_model_var = tk.StringVar(value=llm.get("model", ""))
+        self._row(f, "模型覆盖",
+                  ttk.Entry(f, textvariable=self.llm_model_var, width=30),
+                  "留空 = 厂商默认模型")
+        tk.Label(f, text="— 各厂商 API Key（保存后 DPAPI 加密）—",
+                 fg=self.th["sub"], bg=self.th["win"],
+                 font=("Microsoft YaHei UI", 8)).pack(anchor="w",
+                                                      padx=12, pady=(4, 0))
+        self.prov_key_vars = {}
+        for p in PROVIDER_ORDER:
+            pv = providers.get(p) or {}
+            v = tk.StringVar(value=pv.get("api_key", ""))
+            self.prov_key_vars[p] = v
+            self._row(f, f"{PROVIDER_LABELS[p]} Key",
+                      ttk.Entry(f, textvariable=v, show="*", width=30))
+        # 自定义厂商额外：Base URL + 默认模型
+        cu = providers.get("custom") or {}
+        self.prov_custom_url = tk.StringVar(value=cu.get("base_url", ""))
+        self._row(f, "自定义 Base URL",
+                  ttk.Entry(f, textvariable=self.prov_custom_url, width=30),
+                  "仅『自定义』需要")
+        self.prov_custom_model = tk.StringVar(value=cu.get("chat_model", ""))
+        self._row(f, "自定义默认模型",
+                  ttk.Entry(f, textvariable=self.prov_custom_model, width=30),
+                  "留空则用模型覆盖指定")
+
+    # ------------------------------------------------------------ RAG（v1.7）
+    def _section_rag(self, root):
+        f = self._frame(root, "RAG 快捷问答（本地知识库检索）")
+        sf = (self.cfg.get("providers") or {}).get("siliconflow") or {}
+        self.rag_embed_var = tk.StringVar(
+            value=sf.get("embed_model", "BAAI/bge-m3"))
+        self._row(f, "向量模型", ttk.Entry(f, textvariable=self.rag_embed_var,
+                                           width=30),
+                  "检索固定走硅基流动")
+        self.rag_rerank_var = tk.StringVar(
+            value=sf.get("rerank_model", "BAAI/bge-reranker-v2-m3"))
+        self._row(f, "重排模型", ttk.Entry(f, textvariable=self.rag_rerank_var,
+                                           width=30),
+                  "无重排端点可留空")
         presets = tk.Frame(f, bg=self.th["win"])
         presets.pack(fill="x", pady=2)
-        tk.Label(presets, text="预设", width=12, anchor="w", bg=self.th["win"],
-                 font=("Microsoft YaHei UI", 9)).pack(side="left")
-        for name, url, model in (
-                ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
-                ("硅基流动", "https://api.siliconflow.cn/v1", "Qwen/Qwen2.5-7B-Instruct"),
-                ("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),
-                ("本地 Ollama", "http://localhost:11434/v1", "qwen2.5:7b")):
-            ttk.Button(presets, text=name, width=10,
-                       command=lambda u=url, m=model: self._apply_preset(u, m)) \
-                .pack(side="left", padx=2)
+        tk.Label(presets, text="", width=12, bg=self.th["win"]).pack(side="left")
+        ttk.Button(presets, text="打开文档库…", width=14,
+                   command=lambda: getattr(self.app, "open_kb_manager",
+                                           lambda: None)()).pack(side="left", padx=2)
+        tk.Label(f,
+                 text="用法：先在『打开文档库』导入 .txt/.md 资料，"
+                      "再选中文字按 Ctrl+Alt+Y 提问；回答的生成模型 = "
+                      "凭据中心的生成服务商",
+                 fg=self.th["sub"], bg=self.th["win"],
+                 font=("Microsoft YaHei UI", 8), wraplength=430,
+                 justify="left", anchor="w").pack(anchor="w",
+                                                  padx=12, pady=(2, 4))
 
+    # ------------------------------------------------------------ 其他
+    def _section_misc(self, root):
         df = self._frame(root, "其他")
         self.autostart = tk.BooleanVar(value=bool(self.cfg.get("autostart")))
         ttk.Checkbutton(df, text="开机自动启动（写入 HKCU Run，无需管理员）",
@@ -1600,48 +1656,6 @@ class Settings(tk.Toplevel):
                                        "zh-TW", "ja", "ko", "fr", "de",
                                        "es", "ru"], state="readonly"),
                   "截图识别语言，auto=优先英语")
-
-    def _apply_preset(self, url, model):
-        self.llm_vars["base_url"].set(url)
-        self.llm_vars["model"].set(model)
-
-    # ------------------------------------------------------------ RAG（v1.7）
-    def _section_rag(self, root):
-        f = self._frame(root, "RAG 快捷问答（本地知识库检索 · 实验）")
-        api = self.cfg.get("rag.api") or {}
-        self.rag_vars = {}
-        for key, label, width in (("base_url", "Base URL", 46),
-                                  ("api_key", "API Key", 46),
-                                  ("chat_model", "生成模型", 30),
-                                  ("embed_model", "向量模型", 30),
-                                  ("rerank_model", "重排模型", 30)):
-            v = tk.StringVar(value=api.get(key, ""))
-            self.rag_vars[key] = v
-            self._row(f, label, ttk.Entry(f, textvariable=v, width=width,
-                                          show="*" if key == "api_key" else ""))
-        presets = tk.Frame(f, bg=self.th["win"])
-        presets.pack(fill="x", pady=2)
-        tk.Label(presets, text="预设", width=12, anchor="w", bg=self.th["win"],
-                 font=("Microsoft YaHei UI", 9)).pack(side="left")
-        ttk.Button(presets, text="硅基流动（免费档）", width=16,
-                   command=self._apply_rag_preset).pack(side="left", padx=2)
-        ttk.Button(presets, text="打开文档库…", width=14,
-                   command=lambda: getattr(self.app, "open_kb_manager",
-                                           lambda: None)()).pack(side="left", padx=2)
-        tk.Label(f, text="API Key 落盘自动加密（DPAPI，绑定本机与当前账户）；"
-                         "平台无重排/向量端点时对应模型留空即可",
-                 fg=self.th["sub"], bg=self.th["win"],
-                 font=("Microsoft YaHei UI", 8)).pack(anchor="w", padx=12, pady=(2, 2))
-        tk.Label(f, text="用法：选中术语按 Ctrl+Alt+R 提问（可改问法追问）；"
-                         "先在『打开文档库』导入 .txt/.md 资料",
-                 fg=self.th["sub"], bg=self.th["win"],
-                 font=("Microsoft YaHei UI", 8)).pack(anchor="w", padx=12, pady=(0, 4))
-
-    def _apply_rag_preset(self):
-        self.rag_vars["base_url"].set("https://api.siliconflow.cn/v1")
-        self.rag_vars["chat_model"].set("Qwen/Qwen3-8B")
-        self.rag_vars["embed_model"].set("BAAI/bge-m3")
-        self.rag_vars["rerank_model"].set("BAAI/bge-reranker-v2-m3")
 
     # ------------------------------------------------------------ 界面
     def _section_ui(self, root):
@@ -1678,7 +1692,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.6.10 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.7.0 · 零第三方依赖",
                  fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
@@ -1697,10 +1711,24 @@ class Settings(tk.Toplevel):
         cfg.set("engine", self.engine_var.get())
         cfg.set("fallback_chain", [n for n, v in self.fb_vars.items() if v.get()])
         cfg.set("target_lang", self.tgt_var.get())
-        for k, v in self.llm_vars.items():
-            cfg.set(f"llm.{k}", v.get().strip())
-        for k, v in self.rag_vars.items():
-            cfg.set(f"rag.api.{k}", v.get().strip())
+
+        # 凭据中心（v1.7.0 A）：生成厂商 / 模型覆盖 / 五家 Key / 检索模型。
+        # Key 与自定义端点存到 providers.*，save() 时 _SECRET_FIELDS 自动
+        # DPAPI 加密；非 UI 字段（thinking、各家 base_url 等）保持不动。
+        cfg.set("llm.provider",
+                self._lab2key.get(self.gen_provider_var.get(), "siliconflow"))
+        cfg.set("llm.model", self.llm_model_var.get().strip())
+        for p, v in self.prov_key_vars.items():
+            cfg.set(f"providers.{p}.api_key", v.get().strip())
+        cfg.set("providers.custom.base_url",
+                self.prov_custom_url.get().strip())
+        cfg.set("providers.custom.chat_model",
+                self.prov_custom_model.get().strip())
+        cfg.set("providers.siliconflow.embed_model",
+                self.rag_embed_var.get().strip() or "BAAI/bge-m3")
+        cfg.set("providers.siliconflow.rerank_model",
+                self.rag_rerank_var.get().strip()
+                or "BAAI/bge-reranker-v2-m3")
         cfg.set("autostart", self.autostart.get())
         cfg.set("enable_tray", self.tray.get())
         cfg.set("ocr_lang", self.ocr_lang_var.get())

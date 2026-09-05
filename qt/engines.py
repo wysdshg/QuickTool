@@ -104,7 +104,7 @@ class GoogleGtxEngine:
 # ------------------------------------------------------------------ 3. 大模型（OpenAI 兼容）
 class LLMEngine:
     name = "llm"
-    label = "大模型 API（DeepSeek / 硅基流动 / 智谱 / 通义 / Ollama）"
+    label = "大模型（凭据中心所选厂商）"
     need_key = True
 
     SYSTEM = ("You are a professional translation engine. "
@@ -113,12 +113,14 @@ class LLMEngine:
               "Preserve the original line breaks, punctuation style and formatting.")
 
     def translate(self, text, src, tgt, cfg):
-        llm = cfg.get("llm") or {}
-        base = (llm.get("base_url") or "").rstrip("/")
-        key = (llm.get("api_key") or "").strip()
-        model = llm.get("model") or "deepseek-chat"
-        if not base or not key:
-            raise EngineError("未配置大模型 API（设置里填 base_url / api_key / model）")
+        # v1.7 A：翻译与 RAG 问答生成共用凭据中心（llm.provider 厂商）
+        base, key, model = cfg.chat_ep()
+        if not base or not key or not model:
+            name = cfg.get("llm.provider") or "siliconflow"
+            raise EngineError(
+                f"未配置大模型 API（设置页 → 凭据中心 → 「{name}」"
+                + ("填 Base URL / Key / 模型" if name == "custom"
+                   else "填 API Key") + "）")
 
         payload = {
             "model": model,
@@ -126,14 +128,16 @@ class LLMEngine:
                 {"role": "system", "content": self.SYSTEM.format(tgt=tgt)},
                 {"role": "user", "content": text},
             ],
-            "temperature": float(llm.get("temperature", 0.2)),
+            "temperature": float(cfg.get("llm.temperature", 0.2)),
             "stream": False,
         }
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json",
                    "Authorization": f"Bearer {key}",
                    "User-Agent": UA}
-        data = http_json(f"{base}/chat/completions", data=body, headers=headers, timeout=30.0)
+        timeout = float(cfg.get("llm.timeout", 30))
+        data = http_json(f"{base}/chat/completions", data=body,
+                         headers=headers, timeout=timeout)
         try:
             out = data["choices"][0]["message"]["content"]
         except Exception as exc:
@@ -226,8 +230,14 @@ def available_engines(cfg: Config):
     out = []
     for name, cls in ENGINES.items():
         if cls.need_key:
-            sec = cfg.get(name) or {}
-            if not (sec.get("api_key") or "").strip():
-                continue
+            # v1.7 A：LLM 的 key 在凭据中心所选厂商段（llm.provider）
+            if name == "llm":
+                prov = cfg.provider_cfg()
+                if not (prov.get("api_key") or "").strip():
+                    continue
+            else:
+                sec = cfg.get(name) or {}
+                if not (sec.get("api_key") or "").strip():
+                    continue
         out.append((name, cls.label))
     return out
