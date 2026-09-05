@@ -1692,7 +1692,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.7.0 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.7.1 · 零第三方依赖",
                  fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 

@@ -1,24 +1,53 @@
-"""RagEngine：五阶段 RAG 总装（v1.7）。
+"""RagEngine：五阶段 RAG 总装（v1.7.1 fence-aware 上下文）。
 
   ① RAG-Fusion：LLM 生成 3 个问题变体（失败降级为仅原问题）
   ② 两路召回：每 query 跑 BM25（本地 FTS5）+ bge-m3 向量（云端 embed）
   ③ RRF 融合多路排序 → rrf_top_k
   ④ Rerank：云端 bge-reranker 对候选精排 → rerank_top_k（平台无端点可关）
-  ⑤ 大模型流式生成：按【参考资料】作答，on_delta 逐字回调
+  ⑤ 上下文组装（同节去重 + 代码配额）→ 大模型流式生成，on_delta 逐字回调
 
 降级纪律：任何单路故障不阻塞问答（变体失败→原问题；embed/rerank 失败→跳过
 该路）；检索完全失败才抛 RagApiError 由 UI 提示。网络全部由调用方线程承载
 （UI 侧放 worker），本模块不建线程。
 """
+import re
+
 from .api import RagApi, RagApiError
 from . import bm25, vectors
 from .fusion import generate_variants, rrf_merge
 
 _SYS = ("你是耐心且通俗的学习助手。只依据下方【参考资料】回答用户问题；"
         "资料未覆盖到的，先明说“资料未提及”，再用一两句常识补充。"
-        "回答口语化、分要点，控制在 300 字内，不要输出 Markdown 符号。")
+        "回答口语化、分要点，控制在 300 字内，不要输出 Markdown 符号。"
+        "资料中的代码块是参考实现：回答以原理讲解为主，"
+        "仅当用户明确要实现或代码时才引用代码。")
 
-_CTX_LIMIT = 4000     # 注入参考上下文总字符上限（兼容 8K 上下文免费档）
+_CTX_LIMIT = 6000     # 注入参考上下文总字符上限（8K 档留足余量给问答本体）
+
+_CODE_FENCE_RE = re.compile(r"^\s*(```|~~~)", re.M)
+
+
+def _select(chunks, code_quota=1):
+    """同节去重 + 代码块配额（生成上下文防污染，v1.7.1）。
+
+    - 同节去重：同一文档同一标题链的多个命中只留排名最高的一块——
+      防止单一章节连续切片霸占 top_k（rerank 高分常常集中在同一节）；
+    - 代码配额：含 fence 的代码块最多带 code_quota 块（默认 1）——
+      小模型（8B 级）对大段代码的注意力稀释/复读倾向明显，代码只作为
+      参考实现出场一次，其余名额让给理论讲解块。
+    """
+    seen, out, code_n = set(), [], 0
+    for c in chunks:
+        key = (c.get("doc_id"), c.get("title"))
+        if key in seen:
+            continue
+        seen.add(key)
+        if _CODE_FENCE_RE.search(c.get("content") or ""):
+            if code_n >= code_quota:
+                continue
+            code_n += 1
+        out.append(c)
+    return out
 
 
 def _build_context(chunks, limit=_CTX_LIMIT):
@@ -142,6 +171,7 @@ class RagEngine:
             except RagApiError:
                 pass                        # rerank 失败 → RRF 顺序直取
         ordered = ordered[:rerank_k]
+        ordered = _select(ordered)      # 同节去重 + 代码配额（防上下文污染）
 
         # ⑤ 上下文组装 + 流式生成
         status("生成中…")
