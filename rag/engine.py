@@ -138,7 +138,10 @@ class RagEngine:
             try:
                 if self.store.vec_count() < self.store.chunk_count():
                     status("向量化文档…")
-                    vectors.embed_chunks_missing(self.store, self.api(), batch=32)
+                    vectors.embed_chunks_missing(
+                        self.store, self.api(), batch=32,
+                        on_progress=lambda d, t:
+                            status(f"向量化文档 {d}/{t}…"))
             except Exception:
                 need_vec = False
 

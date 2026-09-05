@@ -17,12 +17,47 @@
   - 直连（绕系统代理，实测系统代理对 api.siliconflow.cn 会 502）。
 """
 import json
+import time
 import urllib.error
 import urllib.request
 
 
 class RagApiError(Exception):
     pass
+
+
+# 可重试的错误码：429 限流 / 5xx 服务端抖动 / 0=网络错误（URLError）
+_RETRY_CODES = frozenset({0, 429, 500, 502, 503, 504})
+
+
+def _err_code(exc):
+    """从 RagApiError 文本解析状态码（"API 429：..."）；网络错误按 0 计。"""
+    s = str(exc)
+    if s.startswith("网络错误"):
+        return 0
+    if s.startswith("API "):
+        try:
+            return int(s[4:7])
+        except ValueError:
+            return None
+    return None
+
+
+def _retry_json(fn, retries=3, base_delay=0.8, sleeper=time.sleep):
+    """fn() 返回 JSON；429/5xx/网络错误按指数退避重试（批量向量化场景）。
+
+    base_delay/sleeper 可注入（smoke 用 0 延迟假睡眠）。非可重试错误
+    （401 配置错、400 参数错等）立即抛出，不浪费时间。
+    """
+    delay = base_delay
+    for i in range(retries + 1):
+        try:
+            return fn()
+        except RagApiError as e:
+            if i == retries or _err_code(e) not in _RETRY_CODES:
+                raise
+            sleeper(delay)
+            delay *= 2
 
 
 def _headers(key):
@@ -151,10 +186,10 @@ class RagApi:
         out = []
         for i in range(0, len(texts), batch):
             part = texts[i:i + batch]
-            data = self._post_json(
+            data = _retry_json(lambda p=part: self._post_json(
                 self.retr_base, self.retr_key, "/embeddings",
-                {"model": self.embed_model, "input": part},
-                timeout=self.timeout * 2)
+                {"model": self.embed_model, "input": p},
+                timeout=self.timeout * 2))
             arr = sorted(data.get("data") or [], key=lambda x: x.get("index", 0))
             out.extend(item.get("embedding") or [] for item in arr)
             if len(out) != i + len(part):
@@ -170,13 +205,13 @@ class RagApi:
         self._require_retrieval()
         if not documents:
             return []
-        data = self._post_json(
+        data = _retry_json(lambda: self._post_json(
             self.retr_base, self.retr_key, "/rerank",
             {"model": self.rerank_model, "query": query,
              "documents": documents,
              "top_n": min(top_n, len(documents)),
              "return_documents": False},
-            timeout=self.timeout * 2)
+            timeout=self.timeout * 2))
         results = []
         for r in (data.get("results") or []):
             results.append((int(r.get("index", 0)),

@@ -41,12 +41,20 @@ def _dot(a, b):
     return sum(x * y for x, y in zip(a, b))
 
 
-def embed_chunks_missing(store, api, batch=32):
+def embed_chunks_missing(store, api, batch=32, on_progress=None):
     """给库内缺失向量的 chunk 批量补算（网络，须在 worker 线程调用）。
 
-    返回本次补算的 chunk 数。注意向量缺失判断 + 更新需事务内串行，
-    避免与其它写并发（低频场景直接用内部锁即可）。
+    on_progress(done, total)：每补算完一批回调一次（total 为开始时快照，
+    期间新入库的 chunk 由下一轮调用接手）。返回本次补算的 chunk 数。
+    注意向量缺失判断 + 更新需事务内串行，避免与其它写并发（低频场景
+    直接用内部锁即可）。
     """
+    total = 0
+    with store._lock:
+        total = store._conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE vec IS NULL").fetchone()[0]
+    if on_progress and total:
+        on_progress(0, total)
     done = 0
     while True:
         with store._lock:
@@ -63,6 +71,8 @@ def embed_chunks_missing(store, api, batch=32):
                     (pack(normalize(v)), r["id"]))
             store._conn.commit()
         done += len(rows)
+        if on_progress:
+            on_progress(done, max(total, done))
     return done
 
 

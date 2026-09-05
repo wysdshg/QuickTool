@@ -617,6 +617,7 @@ class KbManager(tk.Toplevel):
             self._toast("PDF 导入", f"{pdf_jobs} 个 PDF 后台解析中…")
         if notes:
             self._toast("部分文件失败", "\n".join(notes[:5]))
+        self._start_prevectorize()      # 入库即后台预向量化（v1.7.1）
 
     def _import_text_files(self, paths):
         """txt/md 同步导入（原 v1.7.0 逻辑），返回 (added, skipped, failed, notes)。"""
@@ -782,6 +783,66 @@ class KbManager(tk.Toplevel):
         if st["warns"]:
             self._toast("PDF 质量提示", "\n".join(st["warns"][:5]))
         self._pdf_stats = {"added": 0, "skipped": 0, "failed": 0, "warns": []}
+        self._start_prevectorize()      # PDF 文本入库后同样补向量
+
+    # ---------------- 后台预向量化（v1.7.1：导入即算，别等首问） ----------------
+    def _start_prevectorize(self):
+        """库内有缺向量就起后台线程补算（幂等：已在跑则本轮循环会覆盖新块）。
+
+        未配 API Key 时静默跳过（ask 时的 gate 兜底），不打扰导入流程。
+        """
+        if getattr(self, "_vec_running", False):
+            return
+        try:
+            from rag.api import RagApi
+            api = RagApi(self.cfg)
+        except Exception:
+            return                      # 未配置生成 Key / 配置不完整
+        store = self._store()
+        if store.vec_count() >= store.chunk_count():
+            return
+        self._vec_running = True
+        if not hasattr(self, "_vecq"):
+            self._vecq = queue.Queue()
+            self._poll_vec()
+        t = threading.Thread(target=self._vec_worker, args=(api,), daemon=True)
+        t.start()
+
+    def _vec_worker(self, api):
+        """后台线程：批量补算缺失向量，进度/结果全走 _vecq（不碰 Tk）。"""
+        from rag import vectors
+        try:
+            vectors.embed_chunks_missing(
+                self._store(), api, batch=32,
+                on_progress=lambda d, t: self._vecq.put(("progress", (d, t))))
+            self._vecq.put(("done", None))
+        except Exception as exc:
+            self._vecq.put(("error", str(exc)))
+
+    def _poll_vec(self):
+        """主线程轮询 _vecq：刷进度 / 收尾。窗口关了就停（_vec_closed 守卫）。"""
+        if getattr(self, "_vec_closed", False):
+            return
+        if not hasattr(self, "_vecq"):
+            return
+        try:
+            while True:
+                kind, payload = self._vecq.get_nowait()
+                if kind == "progress":
+                    d, t = payload
+                    self.summary.configure(text=f"后台向量化 {d}/{t}…")
+                    if d % 320 == 0:    # 每 10 批刷一次清单，别太频
+                        self.refresh()
+                elif kind == "done":
+                    self._vec_running = False
+                    self.refresh()
+                elif kind == "error":
+                    self._vec_running = False
+                    self.refresh()
+                    self._toast("后台向量化停止", payload[:150])
+        except queue.Empty:
+            pass
+        self.after(400, self._poll_vec)
 
     def delete_selected(self):
         sel = self.listbox.curselection()
@@ -824,6 +885,7 @@ class KbManager(tk.Toplevel):
 
     def close(self):
         self._pdf_closed = True          # 停 _poll_pdf 轮询（后台线程自然收尾）
+        self._vec_closed = True          # 停 _poll_vec 轮询
         if getattr(self.app, "kb_mgr", None) is self:
             self.app.kb_mgr = None
         try:
