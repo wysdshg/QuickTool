@@ -161,6 +161,11 @@ except Exception as e:
 
 print("\n== 6. 翻译引擎 ==")
 cfg = Config()
+# 语向钉死为英→中：引擎可用性只该测引擎，不该随真实 config.json 的
+# target_lang 漂移（实测踩过：用户配置 target=en 时 langpair=en|en，
+# MyMemory 403 "PLEASE SELECT TWO DISTINCT LANGUAGES"）
+cfg.set("source_lang", "auto")
+cfg.set("target_lang", "zh-CN")
 tr = Translator(cfg)
 sample = "artificial intelligence is reshaping the software industry"
 for name in ("mymemory", "google", "offline"):
@@ -723,14 +728,16 @@ try:
     fake5 = type("App", (), {})()
     fake5.root = tk.Tk()
     fake5.root.withdraw()
-    fake5.cfg = {
-        "hotkey_translate": "Ctrl+Q", "hotkey_ocr": "Ctrl+Alt+A",
-        "hotkey_pin": "Ctrl+Prtsc", "hotkey_note": "Ctrl+Alt+N",
-        "hotkey_settings": "Ctrl+Alt+S", "hotkey_quit": "Ctrl+Alt+Q",
-        "engine": "mymemory", "mini_button": True, "mini_button_maxlen": 300,
-        "ocr_lang": "auto", "llm": {}, "openai": {},
-        "popup": {}, "ui": {}, "font": {},
-    }
+    # v1.7.2 起设置页构建期调用 cfg.models_for()（点分路径），裸 dict 撑不住，
+    # 换真 Config（临时路径 + 默认数据，不碰真实配置）
+    import json as _json610
+    from qt import config as _cmod610
+    import tempfile as _tf610
+    fake5.cfg = _cmod610.Config()
+    fake5.cfg.path = os.path.join(_tf610.mkdtemp(prefix="qt_cfg_610_"),
+                                  "config.json")
+    fake5.cfg.data = _json610.loads(_json610.dumps(_cmod610.DEFAULTS))
+    fake5.invalidate_rag_engine = lambda: None
     fake5.quit = lambda: None
     fake5.open_ocr = lambda: None
     fake5.open_pin = lambda: None
@@ -761,6 +768,11 @@ try:
         # 会盖住先创建的 Entry —— 点击命中行 Frame，输入框既看不见也点不了。
         # 修复 = _row 里 r.lower()。这里实证：Entry 中心必须命中 Entry 自身。
         e0 = es[0]
+        # winfo_containing 按屏幕坐标做真实命中测试，其他应用的窗口盖上来
+        # 会返回 None（实测：用户正在操作机器时偶发 hit=None）——置顶后再测，
+        # 只验证本应用内 Entry/行 Frame 的 z-order，置顶不影响断言有效性
+        st.attributes("-topmost", True)
+        st.update_idletasks()
         hit = st.winfo_containing(
             e0.winfo_rootx() + e0.winfo_width() // 2,
             e0.winfo_rooty() + e0.winfo_height() // 2)
@@ -1365,6 +1377,55 @@ try:
     check("exclude 去重生效", _top2[0]["id"] == _cids[1],
           f"ids={[_r['id'] for _r in _top2]}")
 
+    # (2b) v1.7.1：embed_chunks_missing 进度回调 + _retry_json 退避重试
+    _cur = _st.db.execute(
+        "INSERT INTO documents(name, sha1, char_len, chunk_count, created_at)"
+        " VALUES('u.md','y',1,2,'t')")
+    _did2 = _cur.lastrowid
+    for _i in range(2):
+        _st.db.execute(
+            "INSERT INTO chunks(doc_id, seq, title, content) VALUES(?,?,?,?)",
+            (_did2, _i, "U", f"待向量化 {_i}"))
+    _st.db.commit()
+
+    class _FakeEmbedApi:
+        def embed(self, texts, batch=32):
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+    _prog = []
+    _n = _vec.embed_chunks_missing(_st, _FakeEmbedApi(), batch=1,
+                                   on_progress=lambda d, t: _prog.append((d, t)))
+    check("embed_chunks_missing 补算+进度回调",
+          _n == 2 and _st.vec_count() == 5
+          and _prog[0] == (0, 2) and _prog[-1] == (2, 2),
+          f"n={_n} vec={_st.vec_count()} prog={_prog}")
+
+    from rag.api import _retry_json, _err_code
+    check("错误码解析（429/网络/401）",
+          _err_code(RagApiError("API 429：x")) == 429
+          and _err_code(RagApiError("网络错误：超时")) == 0
+          and _err_code(RagApiError("API 401：bad key")) == 401)
+    _calls = []
+    def _flaky():
+        _calls.append(1)
+        if len(_calls) < 3:
+            raise RagApiError("API 429：rate limited")
+        return {"ok": 1}
+    _r = _retry_json(_flaky, retries=3, sleeper=lambda s: None)
+    check("429 指数退避重试至成功", _r == {"ok": 1} and len(_calls) == 3,
+          f"calls={len(_calls)}")
+    _calls2 = []
+    def _badkey():
+        _calls2.append(1)
+        raise RagApiError("API 401：bad key")
+    _raised = False
+    try:
+        _retry_json(_badkey, retries=3, sleeper=lambda s: None)
+    except RagApiError:
+        _raised = True
+    check("非可重试错误（401）立即抛出不浪费时间",
+          _raised and len(_calls2) == 1, f"calls={len(_calls2)}")
+
     # (3) 双源配置读取（A2）：chat 走 llm.provider 厂商、embed/rerank 固定
     #     硅基流动；缺 key 抛带厂商名的引导错误（不联网）
     _cfg.set("providers.siliconflow.api_key", "sk-sf-fake")
@@ -1571,7 +1632,8 @@ try:
 
     # (5b) v1.7.1 上下文防污染：同节去重 + 代码配额 + 预算/提示词
     from rag.engine import _select as _sel, _CTX_LIMIT as _LIM
-    check("生成预算提到 6000", _LIM == 6000, f"limit={_LIM}")
+    check("生成预算提到 8000（v1.7.2，配合精排 TopK=10）", _LIM == 8000,
+          f"limit={_LIM}")
     from rag import engine as _eng
     check("系统提示词含代码参考约束", "参考实现" in _eng._SYS,
           f"SYS={_eng._SYS[:40]}…")
@@ -1800,6 +1862,8 @@ try:
     _fa.quit = lambda: None
     _fa.reload_hotkeys = lambda: None
     _fa.toggle_tray = lambda v: None
+    _fa.rag_invalidated = []            # v1.7.2：保存必须触发 RAG 引擎重建
+    _fa.invalidate_rag_engine = lambda: _fa.rag_invalidated.append(1)
     _st = _Settings(_fa)
     _st.gen_provider_var.set("DeepSeek")
     _st.llm_model_var.set("deepseek-v3-x")
@@ -1813,6 +1877,17 @@ try:
     check("_save 写生成厂商与模型覆盖",
           _cu.get("llm.provider") == "deepseek"
           and _cu.get("llm.model") == "deepseek-v3-x")
+    check("_save 后 RAG 引擎被重建（切模型免重启，v1.7.2）",
+          len(_fa.rag_invalidated) == 1,
+          f"calls={len(_fa.rag_invalidated)}")
+    check("_save 记入厂商模型历史（换过一次就记住）",
+          _cu.get("providers.deepseek.models", [])[0] == "deepseek-v3-x",
+          f"models={_cu.get('providers.deepseek.models')}")
+    check("_save 检索参数落盘（默认值直通）",
+          _cu.get("rag.retrieval.fusion_variants") == 3
+          and _cu.get("rag.retrieval.bm25_top_k") == 30
+          and _cu.get("rag.retrieval.vector_top_k") == 30
+          and _cu.get("rag.retrieval.rerank_top_k") == 5)
     check("_save 写各家 Key（DPAPI 密钥字段，内存明文）",
           _cu.get("providers.deepseek.api_key") == "sk-ds-new"
           and _cu.get("providers.siliconflow.api_key") == "sk-sf-new")
@@ -2102,9 +2177,170 @@ try:
         _app3.root.destroy()
     else:
         print("  [SKIP] pypdf 不可用（6.26(4) 批量入库链路跳过）")
+
+    # (5) v1.7.1 导入后预向量化接线（stub 网络层，不联网）
+    from rag import vectors as _vmod
+    _td5 = tempfile.mkdtemp(prefix="qt_batch_smoke5_")
+    _cfg5 = _cmod2.Config()
+    _cfg5.path = os.path.join(_td5, "config.json")
+    _cfg5.data = _json.loads(_json.dumps(_cmod2.DEFAULTS))
+    _cfg5.data.setdefault("providers", {}).setdefault(
+        "siliconflow", {})["api_key"] = "sk-smoke-fake"   # 让 RagApi 可构造
+    _app5 = type("App", (), {})()
+    _app5.root = _tk2.Tk(); _app5.root.withdraw()
+    _app5.cfg = _cfg5
+    _app5.q = _q2.Queue()
+    _app5.ensure_kb_store = (lambda: _KbStore2(_cfg5,
+                              db_path=os.path.join(_td5, "kb.sqlite")))
+    _mgr5 = _KbB(_app5)
+    # 预置 1 个缺向量的 chunk（空库 vec>=chunk 会触发"无需补算"早退）
+    _st5 = _app5.ensure_kb_store()
+    _cur5 = _st5.db.execute(
+        "INSERT INTO documents(name, sha1, char_len, chunk_count, created_at)"
+        " VALUES('p.md','z',1,1,'t')")
+    _st5.db.execute(
+        "INSERT INTO chunks(doc_id, seq, title, content) VALUES(?,?,?,?)",
+        (_cur5.lastrowid, 0, "P", "待向量化内容"))
+    _st5.db.commit()
+    _prog5 = []
+    _orig_ecm = _vmod.embed_chunks_missing
+    def _stub_ecm(store, api, batch=32, on_progress=None):
+        if on_progress:
+            on_progress(1, 1)
+        _prog5.append(1)
+        return 1
+    _vmod.embed_chunks_missing = _stub_ecm
+    try:
+        _mgr5._start_prevectorize()
+        _t0 = time.perf_counter()
+        while getattr(_mgr5, "_vec_running", False) \
+                and time.perf_counter() - _t0 < 5:
+            time.sleep(0.02)
+        # 驱动轮询消化 _vecq（smoke 环境 after() 失灵，与 6.25 同款处理）
+        for _ in range(5):
+            _mgr5._poll_vec()
+        check("导入后预向量化线程接线（stub 完成）",
+              _prog5 and getattr(_mgr5, "_vec_running", False) is False,
+              f"prog={len(_prog5)} running={getattr(_mgr5, '_vec_running', '?')}")
+        _txt5 = _mgr5.summary.cget("text")
+        check("预向量化进度文案可达 summary",
+              "篇文档" in _txt5 or "向量化" in _txt5, f"summary={_txt5!r}")
+    finally:
+        _vmod.embed_chunks_missing = _orig_ecm
+        _mgr5.close()
+        _app5.root.destroy()
 except Exception as exc:
     import traceback; traceback.print_exc()
     check("批量导入子系统", False, repr(exc))
+
+# ===== 6.27 生成模型切换增强（v1.7.2：模型历史记忆 + 检索参数 + 引擎热重建） =====
+print("\n== 6.27 模型历史记忆 / 检索参数 / 切厂商跟随（v1.7.2）==")
+try:
+    import json as _json627
+    import tempfile as _tf627
+    from qt import config as _cmod627
+    from qt.config import PROVIDER_ORDER as _PO627, MODEL_HISTORY_MAX as _MHM627
+
+    _d627 = _tf627.mkdtemp(prefix="qt_cfg_627_")
+    _c627 = _cmod627.Config()
+    _c627.path = os.path.join(_d627, "config.json")
+    _c627.data = _json627.loads(_json627.dumps(_cmod627.DEFAULTS))
+
+    # (1) 惰性播种：旧配置无 models 键，models_for 用 chat_model 兜底
+    check("models_for 无历史时播种厂商默认",
+          _c627.models_for("modelscope") == ["Qwen/Qwen3.8-Flash-Next"],
+          f"-> {_c627.models_for('modelscope')}")
+    check("魔搭默认模型已更新为 Flash-Next（v1.7.2）",
+          _cmod627.DEFAULTS["providers"]["modelscope"]["chat_model"]
+          == "Qwen/Qwen3.8-Flash-Next")
+
+    # (2) remember_model：去重 + 最近在前 + 默认恒最前
+    _c627.remember_model("modelscope", "Qwen/Qwen3-8B")
+    _c627.remember_model("modelscope", "Qwen/Qwen3.5-72B")
+    _c627.remember_model("modelscope", "Qwen/Qwen3-8B")     # 重复 → 置顶去重
+    check("历史去重且最近在前，默认恒最前",
+          _c627.models_for("modelscope")
+          == ["Qwen/Qwen3.8-Flash-Next", "Qwen/Qwen3-8B", "Qwen/Qwen3.5-72B"],
+          f"-> {_c627.models_for('modelscope')}")
+
+    # (3) 上限截断 + 非法输入忽略
+    for _i in range(12):
+        _c627.remember_model("deepseek", f"model-{_i}")
+    check(f"历史条数封顶 {_MHM627}",
+          len(_c627.get("providers.deepseek.models")) == _MHM627,
+          f"-> {len(_c627.get('providers.deepseek.models'))}")
+    _c627.remember_model("不存在的厂商", "x")               # 不抛错不改数据
+    _c627.remember_model("deepseek", "   ")
+    check("非法厂商/空模型静默忽略",
+          len(_c627.get("providers.deepseek.models")) == _MHM627
+          and "不存在的厂商" not in (_c627.get("providers") or {}))
+
+    # (4) 落盘持久化：save → 新实例 load 后历史仍在
+    _c627.save()
+    _c627b = _cmod627.Config()
+    _c627b.path = _c627.path
+    _c627b.data = _json627.loads(_json627.dumps(_cmod627.DEFAULTS))
+    _c627b.load()
+    check("模型历史落盘可恢复",
+          _c627b.models_for("modelscope")
+          == ["Qwen/Qwen3.8-Flash-Next", "Qwen/Qwen3-8B", "Qwen/Qwen3.5-72B"])
+
+    # (5) UI 切厂商：模型下拉跟随 + 跨厂商残留值回退默认
+    import tkinter as tk
+    from qt.ui import Settings as _Settings627
+    _rr627 = tk.Tk()
+    _rr627.withdraw()
+    _cu627 = _cmod627.Config()
+    _cu627.path = os.path.join(_d627, "ui.json")
+    _cu627.data = _json627.loads(_json627.dumps(_cmod627.DEFAULTS))
+    _cu627.remember_model("deepseek", "deepseek-v3-x")
+    _fa627 = type("App", (), {})()
+    _fa627.root = _rr627
+    _fa627.cfg = _cu627
+    _fa627.quit = lambda: None
+    _fa627.reload_hotkeys = lambda: None
+    _fa627.toggle_tray = lambda v: None
+    _fa627.invalidate_rag_engine = lambda: None
+    _fa627.apply_autostart = lambda enable: (True, "")
+    _st627 = _Settings627(_fa627)
+    check("设置页模型下拉 = 当前厂商历史",
+          list(_st627.model_box.cget("values"))
+          == _cu627.models_for("siliconflow"),
+          f"-> {list(_st627.model_box.cget('values'))}")
+    _st627.llm_model_var.set("Qwen/Qwen3-8B")               # 魔搭的模型
+    _st627.gen_provider_var.set("DeepSeek")                 # 切到 DeepSeek
+    _st627._on_provider_change()
+    check("切厂商后下拉换成新厂商历史",
+          list(_st627.model_box.cget("values"))
+          == _cu627.models_for("deepseek"))
+    check("跨厂商残留模型回退为空（=新厂商默认）",
+          _st627.llm_model_var.get() == "")
+    _st627.llm_model_var.set("deepseek-v3-x")               # 历史内不被清掉
+    _st627._on_provider_change()
+    check("历史内模型切厂商回切不清空",
+          _st627.llm_model_var.get() == "deepseek-v3-x")
+
+    # (6) 滚轮防误改（v1.7.2）：悬停在 Combobox 上滚轮必须只滚页面不改值
+    def _combos_of(w):
+        out = []
+        for c in w.winfo_children():
+            if c.winfo_class() == "TCombobox":
+                out.append(c)
+            out.extend(_combos_of(c))
+        return out
+    _cb627 = _combos_of(_st627)
+    check("设置页全部下拉框已拦滚轮（控件级绑定非空）",
+          _cb627 and all(c.bind("<MouseWheel>") for c in _cb627),
+          f"n={len(_cb627)}")
+    check("拦轮后仍转发页面滚动（含 _scroll_canvas）",
+          all("break" in str(c.bind("<MouseWheel>"))
+              for c in _cb627)
+          and hasattr(_st627, "_scroll_canvas"))
+    _st627.destroy()
+    _rr627.destroy()
+except Exception as exc:
+    import traceback; traceback.print_exc()
+    check("模型历史子系统", False, repr(exc))
 
 print(f"\n==== 通过 {ok} 项，失败 {fail} 项 ====")
 sys.exit(1 if fail else 0)

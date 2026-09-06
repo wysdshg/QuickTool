@@ -1372,8 +1372,10 @@ class Settings(tk.Toplevel):
         # 仍引用已销毁的 canvas——此后任何窗口滚轮都会对死 canvas 调 yview_scroll
         # 抛 TclError（真实症状：关闭设置后日志持续刷 UNCAUGHT-TK，2026-09-03 实证）。
         # Toplevel 级绑定经 bindtags 对全部子控件生效，且随窗口销毁自动清除。
-        self.bind("<MouseWheel>",
-                  lambda e=None: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        def _scroll_canvas(delta):
+            canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+        self._scroll_canvas = _scroll_canvas
+        self.bind("<MouseWheel>", lambda e: _scroll_canvas(e.delta))
 
         self._section_engine(inner)
         self._section_hotkey(inner)
@@ -1382,6 +1384,26 @@ class Settings(tk.Toplevel):
         self._section_misc(inner)
         self._section_ui(inner)
         self._section_footer(inner)
+        # 必须在全部 section 建完后跑：给每个 Combobox 拦滚轮（见函数注释）
+        self._tame_combo_wheel(self)
+
+    def _tame_combo_wheel(self, w):
+        """滚轮悬停在 ttk.Combobox 上时「滚页面、不改值」（v1.7.2）。
+
+        Windows 的 TCombobox 类绑定把 <MouseWheel> 直接变成「改选中项」——
+        用户想滚设置页，鼠标扫过『生成服务商』就把智谱滚成了 DeepSeek
+        （真实报障）。控件级 bindtag 先于类绑定执行，转发给页面滚动后
+        return "break" 即可拦掉类绑定；下拉列表展开后的滚轮由 popdown
+        自己的列表处理，不受影响。
+        """
+        for c in w.winfo_children():
+            if c.winfo_class() == "TCombobox":
+                c.bind("<MouseWheel>", self._on_combo_wheel)
+            self._tame_combo_wheel(c)
+
+    def _on_combo_wheel(self, e):
+        self._scroll_canvas(e.delta)
+        return "break"                          # 拦截：类绑定不再改选中项
 
     def _apply_ttk_theme(self, style):
         """把 ttk 控件刷成当前主题色（v1.6.9 ⑥）。
@@ -1567,7 +1589,8 @@ class Settings(tk.Toplevel):
         """凭据中心：五家厂商 Key 统一填写（翻译 LLM 与 RAG 生成共用）。
 
         - 生成服务商：翻译 + RAG 问答生成走这一家（llm.provider）
-        - 模型覆盖：留空用厂商默认 chat_model（可填魔搭 Qwen3-8B-flash-next 等）
+        - 生成模型：可下拉选该厂商的历史模型（models_for），也可手输新模型；
+          切厂商时下拉实时跟随（v1.7.2）——之前 Entry 要手打全名、换过也不记
         - 各厂商 API Key：落盘自动 DPAPI 加密（_SECRET_FIELDS）
         - 检索（embed/rerank）固定硅基流动，Key 就是「硅基流动」那一行
         """
@@ -1579,15 +1602,17 @@ class Settings(tk.Toplevel):
             cur = "siliconflow"
         self._lab2key = {PROVIDER_LABELS[k]: k for k in PROVIDER_ORDER}
         self.gen_provider_var = tk.StringVar(value=PROVIDER_LABELS[cur])
-        self._row(f, "生成服务商",
-                  ttk.Combobox(f, textvariable=self.gen_provider_var,
-                               values=[PROVIDER_LABELS[k] for k in PROVIDER_ORDER],
-                               state="readonly", width=20),
-                  "翻译与 RAG 生成共用此家")
+        prov_box = ttk.Combobox(f, textvariable=self.gen_provider_var,
+                                values=[PROVIDER_LABELS[k] for k in PROVIDER_ORDER],
+                                state="readonly", width=20)
+        self._row(f, "生成服务商", prov_box, "翻译与 RAG 生成共用此家")
         self.llm_model_var = tk.StringVar(value=llm.get("model", ""))
-        self._row(f, "模型覆盖",
-                  ttk.Entry(f, textvariable=self.llm_model_var, width=30),
-                  "留空 = 厂商默认模型")
+        self.model_box = ttk.Combobox(f, textvariable=self.llm_model_var,
+                                      values=self.cfg.models_for(cur),
+                                      width=30)
+        self._row(f, "生成模型", self.model_box,
+                  "下拉=历史；留空=厂商默认")
+        prov_box.bind("<<ComboboxSelected>>", self._on_provider_change)
         tk.Label(f, text="— 各厂商 API Key（保存后 DPAPI 加密）—",
                  fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(anchor="w",
@@ -1597,7 +1622,10 @@ class Settings(tk.Toplevel):
             pv = providers.get(p) or {}
             v = tk.StringVar(value=pv.get("api_key", ""))
             self.prov_key_vars[p] = v
-            self._row(f, f"{PROVIDER_LABELS[p]} Key",
+            # 行标签列宽只有 12 字符，「自定义（OpenAI 兼容） Key」会被截断
+            # （v1.7.2 前用户截图可见），自定义用短标签
+            label = "自定义 Key" if p == "custom" else f"{PROVIDER_LABELS[p]} Key"
+            self._row(f, label,
                       ttk.Entry(f, textvariable=v, show="*", width=30))
         # 自定义厂商额外：Base URL + 默认模型
         cu = providers.get("custom") or {}
@@ -1608,7 +1636,19 @@ class Settings(tk.Toplevel):
         self.prov_custom_model = tk.StringVar(value=cu.get("chat_model", ""))
         self._row(f, "自定义默认模型",
                   ttk.Entry(f, textvariable=self.prov_custom_model, width=30),
-                  "留空则用模型覆盖指定")
+                  "留空则用生成模型指定")
+
+    def _on_provider_change(self, _event=None):
+        """切厂商（v1.7.2）：模型下拉实时换成该厂商的历史列表。
+
+        原模型值若不属于新厂商（跨厂商残留下 old 厂商的模型名），回退为
+        空 = 新厂商默认——之前要手动清空再手打新模型全名，两步并一步。
+        """
+        key = self._lab2key.get(self.gen_provider_var.get(), "siliconflow")
+        models = self.cfg.models_for(key)
+        self.model_box.configure(values=models)
+        if self.llm_model_var.get().strip() not in models:
+            self.llm_model_var.set("")
 
     # ------------------------------------------------------------ RAG（v1.7）
     def _section_rag(self, root):
@@ -1624,6 +1664,25 @@ class Settings(tk.Toplevel):
         self._row(f, "重排模型", ttk.Entry(f, textvariable=self.rag_rerank_var,
                                            width=30),
                   "无重排端点可留空")
+        # 检索参数（v1.7.2：之前只能改配置文件，UI 不可调）
+        retr = self.cfg.get("rag.retrieval") or {}
+        self.rag_variants_var = tk.StringVar(
+            value=str(int(retr.get("fusion_variants", 3))))
+        self._row(f, "检索变体数",
+                  ttk.Combobox(f, textvariable=self.rag_variants_var,
+                               values=["1", "2", "3", "4", "5"],
+                               state="readonly", width=4),
+                  "1=关 Fusion，省一次调用")
+        self.rag_recall_var = tk.StringVar(
+            value=str(int(retr.get("bm25_top_k", 30))))
+        self._row(f, "每路召回TopK",
+                  ttk.Entry(f, textvariable=self.rag_recall_var, width=6),
+                  "10~100，多概念问题调大")
+        self.rag_rerank_k_var = tk.StringVar(
+            value=str(int(retr.get("rerank_top_k", 5))))
+        self._row(f, "精排 TopK",
+                  ttk.Entry(f, textvariable=self.rag_rerank_k_var, width=6),
+                  "进回答的资料条数 1~30")
         presets = tk.Frame(f, bg=self.th["win"])
         presets.pack(fill="x", pady=2)
         tk.Label(presets, text="", width=12, bg=self.th["win"]).pack(side="left")
@@ -1692,7 +1751,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.7.1 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.7.2 · 零第三方依赖",
                  fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 
@@ -1712,12 +1771,28 @@ class Settings(tk.Toplevel):
         cfg.set("fallback_chain", [n for n, v in self.fb_vars.items() if v.get()])
         cfg.set("target_lang", self.tgt_var.get())
 
-        # 凭据中心（v1.7.0 A）：生成厂商 / 模型覆盖 / 五家 Key / 检索模型。
+        # 凭据中心（v1.7.0 A）：生成厂商 / 生成模型 / 五家 Key / 检索模型。
         # Key 与自定义端点存到 providers.*，save() 时 _SECRET_FIELDS 自动
         # DPAPI 加密；非 UI 字段（thinking、各家 base_url 等）保持不动。
-        cfg.set("llm.provider",
-                self._lab2key.get(self.gen_provider_var.get(), "siliconflow"))
-        cfg.set("llm.model", self.llm_model_var.get().strip())
+        prov_key = self._lab2key.get(self.gen_provider_var.get(), "siliconflow")
+        before_ep = (str(self.cfg.get("llm.provider")),
+                     str(self.cfg.get("llm.model") or ""),
+                     str((self.cfg.get("providers") or {})
+                         .get("siliconflow", {}).get("embed_model", "")),
+                     str((self.cfg.get("providers") or {})
+                         .get("siliconflow", {}).get("rerank_model", "")),
+                     str((self.cfg.get("rag") or {})
+                         .get("retrieval", {}).get("rerank_top_k", "")))
+        cfg.set("llm.provider", prov_key)
+        model_val = self.llm_model_var.get().strip()
+        cfg.set("llm.model", model_val)
+        # 模型历史记忆（v1.7.2）：生效模型（覆盖值，留空则厂商默认）记入该
+        # 厂商的 models 列表——换过一次下次下拉直选，不再手打全名。
+        if not model_val:
+            model_val = str((cfg.get("providers") or {})
+                            .get(prov_key, {}).get("chat_model", "") or "").strip()
+        if model_val:
+            cfg.remember_model(prov_key, model_val)
         for p, v in self.prov_key_vars.items():
             cfg.set(f"providers.{p}.api_key", v.get().strip())
         cfg.set("providers.custom.base_url",
@@ -1729,6 +1804,14 @@ class Settings(tk.Toplevel):
         cfg.set("providers.siliconflow.rerank_model",
                 self.rag_rerank_var.get().strip()
                 or "BAAI/bge-reranker-v2-m3")
+        # 检索参数（v1.7.2）：非法输入夹紧回默认，绝不让保存失败
+        cfg.set("rag.retrieval.fusion_variants",
+                self._clamp_int(self.rag_variants_var, 1, 5, 3))
+        recall_k = self._clamp_int(self.rag_recall_var, 10, 100, 30)
+        cfg.set("rag.retrieval.bm25_top_k", recall_k)
+        cfg.set("rag.retrieval.vector_top_k", recall_k)
+        cfg.set("rag.retrieval.rerank_top_k",
+                self._clamp_int(self.rag_rerank_k_var, 1, 30, 5))
         cfg.set("autostart", self.autostart.get())
         cfg.set("enable_tray", self.tray.get())
         cfg.set("ocr_lang", self.ocr_lang_var.get())
@@ -1745,7 +1828,28 @@ class Settings(tk.Toplevel):
         self.app.reload_hotkeys()
         self.app.toggle_tray(self.tray.get())
         self._apply_theme_change()      # v1.6.9 ⑥：主题改了立刻生效
-        self._msg("已保存" if ok else f"已保存，但开机自启设置失败：{err}")
+        # 生成/检索端点热切换（v1.7.2）：RagApi 在首问时固化了端点三元组，
+        # 不重建的话改完设置仍旧发旧厂商——此前「切模型要重启」的根因。
+        self.app.invalidate_rag_engine()
+        after_ep = (str(cfg.get("llm.provider")),
+                    str(cfg.get("llm.model") or ""),
+                    str((cfg.get("providers") or {})
+                        .get("siliconflow", {}).get("embed_model", "")),
+                    str((cfg.get("providers") or {})
+                        .get("siliconflow", {}).get("rerank_model", "")),
+                    str(cfg.get("rag.retrieval", {}).get("rerank_top_k", "")))
+        switched = after_ep != before_ep
+        base_msg = "已保存" if ok else f"已保存，但开机自启设置失败：{err}"
+        self._msg(base_msg + ("；生成/检索模型下一条问答生效" if switched else ""))
+
+    @staticmethod
+    def _clamp_int(var, lo, hi, default):
+        """读 Entry 的整数并夹紧到 [lo, hi]；非数字回 default（提示行不报错）。"""
+        try:
+            v = int(str(var.get()).strip())
+        except (TypeError, ValueError):
+            return default
+        return max(lo, min(hi, v))
 
     def _msg(self, text, error=False):
         if hasattr(self, "test_out") and self.test_out.winfo_exists():

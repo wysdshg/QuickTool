@@ -352,10 +352,21 @@ def release_modifiers():
 
 
 def send_ctrl_c():
-    _send_input([
-        _key(VK_CONTROL), _key(VK_C),
-        _key(VK_C, up=True), _key(VK_CONTROL, up=True),
-    ])
+    """分步注入组合键，键事件之间留间隔（v1.7.2）。
+
+    之前四个事件塞进同一个 SendInput 批次零间隔注入——Word 等输入管线
+    异步、主线程繁忙的程序会在确认修饰键状态之前就把 C 当普通字符提交，
+    表现为「选区被清除、原地多一个 c」（实测 Office 复现，浏览器/记事本
+    均正常）。修饰键按下后留 ~25ms、抬起前留 ~20ms 即可稳定识别为组合键；
+    多出的 ~45ms 落在抓词本来就等剪贴板的窗口里，无感。本函数跑在
+    CaptureWorker 线程（允许阻塞），绝不能挪进鼠标钩子宿主线程。
+    """
+    import time
+    _send_input([_key(VK_CONTROL)])
+    time.sleep(0.025)
+    _send_input([_key(VK_C), _key(VK_C, up=True)])
+    time.sleep(0.02)
+    _send_input([_key(VK_CONTROL, up=True)])
 
 
 def get_foreground_window():

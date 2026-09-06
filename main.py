@@ -56,7 +56,7 @@ from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 from qt.ragui import KbManager, QaWindow
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.2"
 
 HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE, HK_RAG = \
     1, 2, 3, 4, 5, 6, 7
@@ -1024,6 +1024,17 @@ class App:
             from rag.engine import RagEngine
             self.rag_engine = RagEngine(self.ensure_kb_store(), self.cfg)
         return self.rag_engine
+
+    def invalidate_rag_engine(self):
+        """凭据中心 / 检索参数保存后调用：丢弃 RagEngine 单例，下一条问答重建。
+
+        RagEngine 首次 ask 时把 chat/embed/rerank 端点固化进 RagApi（v1.7.2
+        之前改设置不重启不生效的根因）。kb_store 与厂商无关，保留不动；
+        正在流式输出的旧问答窗仍引用旧引擎，让它自然跑完即可。
+        """
+        if self.rag_engine is not None:
+            ls.get_logger().info("RAG-ENGINE-INVALIDATED")
+        self.rag_engine = None
 
     def open_qa(self, selection="", source=""):
         """打开快捷提问窗。选中内容（如有）作「背景」渲染，等待用户输入问题。

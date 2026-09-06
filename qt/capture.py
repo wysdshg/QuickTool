@@ -79,6 +79,8 @@ def get_selected_text(timeout=0.45, retries=2, first_timeout=None):
 
     for attempt in range(retries):
         wa.release_modifiers()
+        time.sleep(0.02)      # 修饰键刚抬起又立即按下：无间隔连发会让 Office
+                              # 的修饰键跟踪产生歧义（v1.7.2，同 send_ctrl_c）
         wa.send_ctrl_c()
         wait = first_timeout if (attempt == 0 and first_timeout) else timeout
         deadline = time.perf_counter() + wait

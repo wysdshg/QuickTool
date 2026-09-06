@@ -35,6 +35,8 @@ DEFAULTS = {
     # ---------------- 凭据中心（v1.7：翻译 LLM 与 RAG 生成共用一家厂商的 Key） ----------------
     # 各家存 base_url / api_key / 默认模型。api_key 落盘自动 DPAPI 密文
     # （_SECRET_FIELDS），内存保持明文。模型可各换，生成侧切换见 llm.provider。
+    # models：该厂商用过的模型历史（remember_model 维护，最近在前，去重，
+    # 上限 MODEL_HISTORY_MAX）——设置页「生成模型」下拉的数据源，换厂商不丢。
     "providers": {
         "siliconflow": {            # 检索专用：向量/重排固定用这一家（embed/rerank）
             "base_url": "https://api.siliconflow.cn/v1",
@@ -43,30 +45,35 @@ DEFAULTS = {
             "embed_model": "BAAI/bge-m3",
             "rerank_model": "BAAI/bge-reranker-v2-m3",
             "thinking": True,       # 支持顶层 enable_thinking=False（Qwen3 提速 ~4 倍）
+            "models": [],
         },
         "modelscope": {             # 魔搭社区（每日有免费额度）
             "base_url": "https://api-inference.modelscope.cn/v1",
             "api_key": "",
-            "chat_model": "Qwen/Qwen3-8B",
+            "chat_model": "Qwen/Qwen3.8-Flash-Next",
             "thinking": True,
+            "models": [],
         },
         "zhipu": {                  # 智谱（glm 免费档；未知字段可能报错 → 不带 thinking 开关）
             "base_url": "https://open.bigmodel.cn/api/paas/v4",
             "api_key": "",
             "chat_model": "glm-4.5-flash",
             "thinking": False,
+            "models": [],
         },
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
             "api_key": "",
             "chat_model": "deepseek-chat",
             "thinking": False,
+            "models": [],
         },
         "custom": {                 # 自定义 OpenAI 兼容端点（需自填 base_url/模型）
             "base_url": "",
             "api_key": "",
             "chat_model": "",
             "thinking": False,
+            "models": [],
         },
     },
     # 生成侧选择（大模型翻译 + RAG 问答生成共用）：
@@ -139,6 +146,10 @@ PROVIDER_LABELS = {
     "deepseek": "DeepSeek",
     "custom": "自定义（OpenAI 兼容）",
 }
+
+# 每厂商记忆的历史模型上限（models_for/remember_model）。够覆盖「日常两三家
+# 厂商 × 每家两三个模型」还有余量，同时防止无限增长撑爆设置下拉。
+MODEL_HISTORY_MAX = 8
 
 
 def _portable_path():
@@ -334,6 +345,41 @@ class Config:
         model = (self.get("llm.model") or "").strip() or \
             (prov.get("chat_model") or "").strip()
         return base, key, model
+
+    def models_for(self, name=None):
+        """某厂商的历史模型列表（最近在前，厂商默认 chat_model 恒在最前）。
+
+        旧配置没有 models 键也无需迁移：读取时用 chat_model 兜底拼接即可，
+        用户首次在设置页选/输模型经 remember_model 落盘后自然有了历史。
+        """
+        if not name:
+            name = self.get("llm.provider") or "siliconflow"
+        if name not in PROVIDER_ORDER:
+            name = "siliconflow"
+        prov = (self.get("providers") or {}).get(name) or {}
+        seq = ([(prov.get("chat_model") or "").strip()]
+               + [str(x).strip() for x in (prov.get("models") or [])])
+        seen, out = set(), []
+        for m in seq:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    def remember_model(self, name, model):
+        """把模型记入某厂商的历史（去重置顶、上限截断）。
+
+        设置页保存时调用——「换过一次就记住」，下次切回该厂商下拉直选。
+        非法厂商 / 空模型静默忽略（记忆是体验增强，绝不能让保存失败）。
+        """
+        model = (model or "").strip()
+        if not model or name not in PROVIDER_ORDER:
+            return
+        with self._lock:
+            prov = self.data.setdefault("providers", {}).setdefault(name, {})
+            hist = [m for m in (prov.get("models") or []) if m != model]
+            hist.insert(0, model)
+            prov["models"] = hist[:MODEL_HISTORY_MAX]
 
     def retrieval_ep(self):
         """检索端点三元组 (base_url, api_key, embed_model)。

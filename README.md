@@ -407,6 +407,17 @@ Current thread → _hglobal_read (winapi.py) ← clipboard_snapshot (434)
 - **修复**：拖选结束先用**按下点所在窗口**判定再决定是否抓词——`is_console_window`（conhost/Windows Terminal/mintty 类名+进程名）与 `is_overlay_window`（topmost+盖满屏的截图遮罩特征）命中即跳过并记 `DRAG-SKIP reason=console|overlay`。正常浏览器/编辑器拖选完全不受影响。热键 Ctrl+Q/Ctrl+Alt+N 路径本次未动。
 - 验证：smoke **140/140**（新增 6.13 节 11 项：控制台类名/进程名判定、遮罩几何判定、_handle_drag_end 集成不触发抓词）、e2e 14/14×2。
 
+**v1.7.2 生成模型切换增强：模型历史记忆 + 检索参数 UI + 引擎热重建**（2026-09-06）：
+- **模型历史记忆（换过一次就记住）**：`providers.<厂商>.models` 列表（去重、最近在前、上限 8，`remember_model` 维护）——设置页保存时自动把生效模型（覆盖值，留空则厂商默认）记入该厂商历史；旧配置无 models 键零迁移，`models_for` 读取时用 chat_model 兜底播种。魔搭默认 chat_model 顺带更新为 `Qwen/Qwen3.8-Flash-Next`。
+- **「模型覆盖」Entry → 「生成模型」可编辑 Combobox**：下拉列出当前厂商的历史模型，也可手输新模型；**切厂商（`<<ComboboxSelected>>`）下拉实时跟随新厂商历史**，跨厂商残留的模型名自动回退为空（=新厂商默认）——此前换厂商要手打模型全名、换过的组合不留记录，两步并一步。
+- **RAG 检索参数进设置页**：`_section_rag` 新增「检索变体数」（1~5，1=关 Fusion 省一次调用）、「每路召回TopK」（10~100，同时写 bm25/vector 两路）、「精排 TopK」（1~30）三行，非法输入 `_clamp_int` 夹紧回默认。多概念问题加大召回不再要改配置文件。
+- **切模型免重启（v1.7.0 遗留 bug 修）**：RagEngine 首问时把 chat/embed/rerank 端点固化进 RagApi 单例，`Settings._save` 从不重置——表现为"设置里切了厂商，问答仍发旧厂商"（实测：魔搭零消耗、硅基流动账单出现 Qwen3-8B）。修复：`_save` 落盘后调 `app.invalidate_rag_engine()` 丢弃单例，下一条问答按新配置重建；正在流式输出的旧问答窗自然跑完。`RagApi.__init__` 增加 `RAG-API chat=…@… retr=… embed=… rerank=…` 端点留痕日志，账单对不上一眼可查。
+- **小修**：凭据中心「自定义（OpenAI 兼容） Key」行标签超列宽被截断 → 自定义行用短标签「自定义 Key」；smoke 第 6 节引擎测试钉死 `source_lang/target_lang`（真实 config 的 `target_lang=en` 会让 MyMemory 收到 `langpair=en|en` 报 403，引擎可用性不该随用户配置漂移）。
+- **滚轮防误改下拉框（v1.7.2 补）**：Windows 的 TCombobox 类绑定把悬停滚轮直接变成「改选中项」——滚设置页时鼠标扫过『生成服务商』，智谱就被滚成了 DeepSeek（真实报障）。`_tame_combo_wheel` 在建窗后给**全部** Combobox 加控件级 `<MouseWheel>` 绑定：转发 `delta` 给页面滚动后 `return "break"` 拦掉类绑定——悬停在下拉框上滚轮照样滚页面，但值不再变；下拉列表展开后的滚轮由 popdown 自己的列表处理，不受影响。
+- **上下文预算 6000→8000（v1.7.2 补）**：配合精排 TopK=10（10 块 ×~500 字符 ≈5000，旧预算会截掉后几块）。实测 TopK=10 + 预算 8000 后，此前检索失利的 Q3 锁升级 / Q5 GC Roots 两题全面翻盘（Flash-Next 72→92、70→91；Qwen3-8B 90→92、90→94），枚举类来源（锁升级全链、GC Roots 六类）稳定进入上下文。另：6.10 布局回归的 z-order 命中测试被其他应用前台窗口干扰（用户操作机器时偶发 hit=None），改为置顶后再测。
+- **Office 拖选出 c 修复（v1.7.2 补）**：`send_ctrl_c` 曾把 Ctrl↓/C↓/C↑/Ctrl↑ 四个事件塞进**同一个 SendInput 批次零间隔注入**——Word 的输入管线异步、主线程繁忙，会在确认修饰键状态之前就把 C 当普通字符提交，表现为「拖选后所选文字被清除、原地多一个 c」（选区被裸字符键入覆盖；浏览器/记事本同步管线无此问题）。改为分步注入 + 键间留间隔（Ctrl↓ → 25ms → C↓↑ → 20ms → Ctrl↑），`release_modifiers` 与 `send_ctrl_c` 之间也补 20ms——多出的 ~45ms 落在抓词等剪贴板的窗口里无感，全部跑在 CaptureWorker 线程不碰钩子线程。真机验证：Word 探针文档真实拖选 → `CAPTURE-DONE len=43` 抓词成功、文字完好无 c。
+- 验证：smoke **272/272**（6.24 新增 3 项：保存后引擎重建/模型历史落盘/检索参数直通；6.27 新增 12 项：播种/去重置顶/封顶/非法忽略/持久化/下拉跟随/残留回退/全 Combobox 拦轮+滚动转发）、e2e **14/14**（源码 + 打包）。
+
 **v1.7.1 fence-aware 切分 + 上下文防污染 + 批量导入**（2026-09）：
 - **代码块原子化（切分根因修）**：针对"讲解算法+参考代码"类 md 实测（rag-corpus-clean 1552 文件 / 13728 代码块：84% ≤500 已安全、16% 被按标点腰斩且中间片丢失 ``` 标记）——fence 块独立成原子单元，**≤3000 字符（实测 p99=3045 覆盖全部教学代码）永不切**，放不下就独占 chunk，命中即完整代码；**>3000 整块跳过不入库**（实测该尺寸几乎全是 Coze/Dify 数据 blob：单行 3 万字符的 JSON 测试样例，检索命中不了、命中了也没用）。fence 与前后散文强制 flush 分离，代码块不再被拖进散文段落。
 - **生成上下文防污染（小模型 8B 级实测痛点）**：预算 4000→6000（3000 字符代码块命中不再挤掉全部来源）；**同节去重**——同文档同标题链的命中只留最高分一块，防单章节连续切片霸榜；**代码配额=1**——含 fence 的块最多进 1 块，防 Qwen3-8B 级模型面对大段代码的注意力稀释/复读倾向；系统提示词加"代码是参考实现，回答以原理讲解为主"。
@@ -696,4 +707,4 @@ excludes=[...]                   # 剔除用不到的标准库/大包
 
 ---
 
-*QuickTool v1.7.1 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*
+*QuickTool v1.7.2 · 运行时零第三方依赖 · 底层能力基于 Win32 API（RegisterHotKey / 剪贴板 / Shell_NotifyIcon）*

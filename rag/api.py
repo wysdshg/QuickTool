@@ -89,6 +89,15 @@ class RagApi:
                 f"未配置生成模型（设置页 → 凭据中心 → 「{name}」填 API Key"
                 + (" / 自定义需填 Base URL 与模型" if name == "custom" else "")
                 + "）")
+        # 端点留痕：账单对不上 / 「到底用的哪家」时看这一行即可（v1.7.2）
+        try:
+            from qt.logging_setup import get_logger
+            get_logger().info(
+                "RAG-API chat=%s@%s retr=%s@%s embed=%s rerank=%s",
+                self.chat_model, self.chat_base, "siliconflow",
+                self.retr_base, self.embed_model, self.rerank_model)
+        except Exception:
+            pass                                    # 日志自身异常绝不挡请求
         self._opener = _opener()
 
     # ------------------------------------------------------------ 基础请求
