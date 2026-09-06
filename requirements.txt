@@ -2,7 +2,7 @@
 #
 # 全部功能基于 Python 标准库实现（tkinter / ctypes / urllib / json / winreg /
 # threading / queue），不引入 requests、pyperclip、keyboard、pynput、pywin32、
-# pystray 等任何第三方包。这样打包后的 exe 只有 11 MB 左右，且不需要联网装依赖。
+# pystray 等任何第三方包。运行时零第三方依赖（唯一例外 pypdf，打包后 exe 约 24 MB），且不需要联网装依赖。
 #
 # 只有「打包」这一个环节需要 PyInstaller（开发机装一次即可，不进最终产物）：
 #
