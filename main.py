@@ -462,7 +462,8 @@ class App:
         直接打字提问。
 
         与便签相同不做「自然语言」过滤——术语/代码/公式正是要问的对象。
-        抓到的文本只作文本背景（engine 侧 extra_context），不进检索关键词。
+        抓到的文本以 extra_context 注入生成（完整），检索侧并其前 100 字
+        （engine 侧 _retr_query，v1.7.2 短背景豁免）。
         """
         text = get_selected_text(first_timeout=0.25) or ""
         self.q.put(("rag_open", (text.strip(), self._last_source)))
@@ -1069,8 +1070,9 @@ class App:
     def ask_rag(self, window, question, selection=""):
         """主线程入口：问题 + 选中背景交给 RAG worker（busy 由 QaWindow 管理）。
 
-        engine 侧 question 只作检索 query；selection 以 extra_context 注入
-        生成消息作消歧背景，绝不混进检索关键词（长背景会稀释 BM25/向量命中）。
+        engine 侧检索 query = question + selection 前 100 字（v1.7.2 短背景
+        豁免：问题常不含概念词，背景头部恰是概念）；完整 selection 仍以
+        extra_context 注入生成消息作消歧背景。
         """
         try:
             self.ensure_rag_engine()

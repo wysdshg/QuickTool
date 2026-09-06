@@ -1672,9 +1672,10 @@ try:
           f" embed={_e6._api.n_embed}")
     _kb6.close()
 
-    # (7) extra_context 只进生成、不进检索（C 阶段「选中背景」防回归）：
-    #     背景词绝不能漏进 fusion 变体请求或 rerank query——检索 query 只用
-    #     用户问题；背景只在最终生成消息里以【用户选中内容作背景】出现。
+    # (7) 检索/生成的背景分工（C 阶段防回归，v1.7.2 短背景豁免改版）：
+    #     检索 query = 问题 + 背景前 100 字（概念补全）；完整背景只在最终
+    #     生成消息里以【用户选中内容作背景】出现，fusion/rerank 不见 100 字
+    #     之外的背景内容。
     _c, _k, _e = _mk_eng6_22("bg", {"fusion_variants": 3,
                                     "enable_rerank": True,
                                     "rerank_top_k": 1})
@@ -1688,12 +1689,14 @@ try:
           f"user={_usr[:90]!r}")
     _once = " ".join(m.get("content", "")
                      for m in (_e._api.last_once_messages or []))
-    check("fusion 变体请求只带问题、不含背景",
-          _e._api.last_once_messages is not None and "苹果种植" not in _once,
+    check("fusion 变体请求含问题 + 背景前 100 字",
+          _e._api.last_once_messages is not None
+          and "苹果种植" in _once          # 背景（<100 字）已并入变体输入
+          and "编程里的变量怎么用" in _once,
           f"once={_once[:90]!r}")
-    check("rerank query 不含背景（= 原始问题）",
-          (_e._api.last_rerank_query or "").strip() == "编程里的变量怎么用"
-          and "苹果" not in (_e._api.last_rerank_query or ""),
+    check("rerank query = 问题 + 背景前 100 字（v1.7.2）",
+          (_e._api.last_rerank_query or "").strip()
+          == "编程里的变量怎么用 " + _BG.strip(),
           f"q={_e._api.last_rerank_query!r}")
     _try_bg = False
     try:
@@ -2338,6 +2341,17 @@ try:
           and hasattr(_st627, "_scroll_canvas"))
     _st627.destroy()
     _rr627.destroy()
+
+    # (7) 短背景豁免（v1.7.2）：检索 query = 问题 + 背景前 100 字
+    from rag.engine import _retr_query as _rq627, _BG_QUERY_CHARS as _BQC627
+    check("无概念词问题并入背景概念",
+          _rq627("是什么？还有什么屏障？", "StoreStore屏障")
+          == "是什么？还有什么屏障？ StoreStore屏障")
+    check("长背景只取前 100 字（不稀释召回）",
+          len(_rq627("q", "X" * 300)) == len("q") + 1 + _BQC627)
+    check("背景为空回落纯问题",
+          _rq627("什么是锁升级？", "  ") == "什么是锁升级？"
+          and _rq627("什么是锁升级？", "") == "什么是锁升级？")
 except Exception as exc:
     import traceback; traceback.print_exc()
     check("模型历史子系统", False, repr(exc))

@@ -28,6 +28,21 @@ _CTX_LIMIT = 8000     # 注入参考上下文总字符上限（v1.7.2：6000→8
 
 _CODE_FENCE_RE = re.compile(r"^\s*(```|~~~)", re.M)
 
+_BG_QUERY_CHARS = 100   # 背景并入检索 query 的截取长度（v1.7.2 短背景豁免）
+
+
+def _retr_query(question, extra_context):
+    """检索 query = 问题 + 选中背景的前 100 字（v1.7.2 短背景豁免）。
+
+    用户的问题常常不含概念词（"是什么？还有什么屏障？"），而选中内容的
+    头部恰恰是概念所在——实测只并 100 字既能补上概念，又不会用长背景
+    稀释 BM25/向量命中（排序质量由 rerank 兜底）。生成侧仍注入完整背景，
+    本函数只影响检索链路（变体生成 / 双路召回 / 精排 query）。
+    """
+    q = (question or "").strip()
+    bg = (extra_context or "").strip()[:_BG_QUERY_CHARS].strip()
+    return f"{q} {bg}".strip() if bg else q
+
 
 def _select(chunks, code_quota=1):
     """同节去重 + 代码块配额（生成上下文防污染，v1.7.1）。
@@ -109,9 +124,10 @@ class RagEngine:
     def ask(self, question, extra_context="", on_status=None, on_delta=None):
         """五阶段端到端问答。返回 {"answer", "refs", "stages"}。
 
-        extra_context：用户选中内容（背景）。**只注入生成、不进检索**——
-        检索 query 只用 question（背景长文会稀释关键词），而生成侧带上背景
-        帮模型消歧（如"AI"既指人工智能也指某个软件）。
+        extra_context：用户选中内容（背景）。**完整注入生成**帮模型消歧
+        （如"AI"既指人工智能也指某个软件）；检索侧只并**前 100 字**
+        （_retr_query，v1.7.2 短背景豁免）——问题常不含概念词
+        （"是什么？"），背景头部恰是概念，全量并入则稀释关键词命中。
 
         on_status(str)：阶段提示（扩展问题/检索中/精排中/生成中）；
         on_delta(content, reasoning)：流式逐段回调（reasoning 为空因 thinking 已关）。
@@ -125,12 +141,14 @@ class RagEngine:
             raise RagApiError("文档库为空：先在文档库中导入学习资料")
         if not question.strip():
             raise RagApiError("问题为空")
+        retr_query = _retr_query(question, extra_context)
 
-        # ① RAG-Fusion 变体（失败降级原问题）
+        # ① RAG-Fusion 变体（失败降级原问题；输入用合并 query——纯"是什么？"
+        # 这类无概念词的问题，变体也改写不出东西）
         status("扩展问题…")
-        queries = [question]
+        queries = [retr_query]
         if ref_retr("fusion_variants", 3) > 1:
-            queries = generate_variants(self.api(), question,
+            queries = generate_variants(self.api(), retr_query,
                                         n=int(ref_retr("fusion_variants", 3)))
 
         # 向量路前置：库内还有 chunk 没算向量就先补算（网络，仅首次/新增文档后
@@ -171,7 +189,7 @@ class RagEngine:
         if ref_retr("enable_rerank", True) and len(ordered) > rerank_k:
             try:
                 docs = [c["content"] for c in ordered]
-                scored = self.api().rerank(question, docs, top_n=rerank_k)
+                scored = self.api().rerank(retr_query, docs, top_n=rerank_k)
                 ordered = [ordered[idx] for idx, _ in scored]
             except RagApiError:
                 pass                        # rerank 失败 → RRF 顺序直取
