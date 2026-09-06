@@ -17,14 +17,10 @@ from . import winapi as _wa
 APP_NAME = "QuickTool"
 
 DEFAULTS = {
-    # ---------------- 快捷键 ----------------
-    "hotkey_translate": "Ctrl+Q",     # 划词翻译（被占用时自动顺延到 Ctrl+Alt+T 等）
-    "hotkey_settings": "Ctrl+Alt+S",
-    "hotkey_quit": "Ctrl+Alt+Q",
-    "hotkey_ocr": "Ctrl+Alt+A",       # 截图翻译（被占用时自动顺延）
-    "hotkey_pin": "Ctrl+Prtsc",       # 截图对照小窗（框选截屏置顶对照）
-    "hotkey_note": "Ctrl+Alt+N",      # 置顶便签（划词后钉到屏幕，可累积多段）
-    "hotkey_rag": "Ctrl+Alt+R",       # 快捷提问 RAG（划词或键入问题 → 本地库检索回答）
+    # ---------------- 快捷键（v1.7.3 收敛为 3 个全局热键） ----------------
+    "hotkey_translate": "Ctrl+Q",     # 划词翻译直达（被占用自动顺延到 Ctrl+Alt+T 等）
+    "hotkey_textmenu": "Ctrl+Alt+Q",  # 文字动作菜单：抓选中文字弹 1 翻译/2 便签/3 问答
+    "hotkey_shotmenu": "Ctrl+Alt+W",  # 截图动作菜单：框选屏幕后弹 1 对照/2 OCR
 
     # ---------------- 翻译引擎 ----------------
     "engine": "mymemory",                 # 主引擎

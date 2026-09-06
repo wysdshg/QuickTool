@@ -52,14 +52,16 @@ from qt import ocr
 from qt.capture import get_selected_text, looks_translatable, normalize_text
 from qt.config import Config
 from qt.translator import Translator
-from qt.ui import (MiniButton, NoteWindow, PinWindow, Popup,
+from qt.ui import (ActionMenu, MiniButton, NoteWindow, PinWindow, Popup,
                    RegionSelector, Settings)
 from qt.ragui import KbManager, QaWindow
 
-APP_VERSION = "1.7.2"
+APP_VERSION = "1.7.3"
 
-HK_TRANSLATE, HK_SETTINGS, HK_QUIT, HK_OCR, HK_PIN, HK_NOTE, HK_RAG = \
-    1, 2, 3, 4, 5, 6, 7
+# v1.7.3 全局热键收敛为 3 个：划词直达 + 两个场景动作菜单。
+# 便签/问答/截图翻译/截图对照改由菜单（数字键直达）与托盘触达，不再各占
+# 热键——注册面从 42 个候选组合缩到 ~12 个，冲突概率与记忆负担同步下降。
+HK_TRANSLATE, HK_TEXTMENU, HK_SHOTMENU = 1, 2, 3
 WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
 # 注：WM_APP+4/+6 曾是「迷你按钮翻译 / OCR 运行」的 Win32 线程中转消息，
 # v1.6.7 ③ 已改为直接入 job_q（文本/图片路径随 payload 走），故删除。
@@ -70,17 +72,8 @@ WM_APP_TRAY_TOGGLE = wa.WM_APP + 3
 HOTKEY_CANDIDATES = {
     HK_TRANSLATE: ["Ctrl+Q", "Ctrl+Alt+T", "Ctrl+Alt+F1", "Ctrl+Alt+D",
                    "Ctrl+Alt+G", "Ctrl+Alt+X", "Ctrl+Shift+T", "Alt+T"],
-    HK_SETTINGS: ["Ctrl+Alt+S", "Ctrl+Alt+Shift+S", "Ctrl+Alt+,",
-                  "Ctrl+Alt+O", "Ctrl+Alt+P", "Ctrl+Alt+F8"],
-    HK_QUIT: ["Ctrl+Alt+Q", "Ctrl+Alt+Shift+Q", "Ctrl+Alt+X"],
-    HK_OCR: ["Ctrl+Alt+A", "Ctrl+Alt+I", "Ctrl+Alt+P", "Ctrl+Alt+F9"],
-    HK_PIN: ["Ctrl+Prtsc", "Ctrl+Alt+W", "Ctrl+Alt+D", "Ctrl+Alt+E"],
-    # 置顶便签：N = Note；顺延要避开上面已用的 D/E/W
-    HK_NOTE: ["Ctrl+Alt+N", "Ctrl+Alt+M", "Ctrl+Alt+B", "Ctrl+Alt+K"],
-    # 快捷提问 RAG：R 开头；顺延避开已被候选占用的字母（A/D/E/G/I/K/M/N/
-    # P/Q/S/T/W/X/F1/F8/F9/Prtsc 等），挑冷门键位兜底
-    HK_RAG: ["Ctrl+Alt+R", "Ctrl+Alt+Y", "Ctrl+Alt+U", "Ctrl+Alt+F7",
-             "Ctrl+Alt+;", "Ctrl+Alt+F6"],
+    HK_TEXTMENU: ["Ctrl+Alt+Q", "Ctrl+Alt+S", "Ctrl+Alt+M", "Ctrl+Alt+K"],
+    HK_SHOTMENU: ["Ctrl+Alt+W", "Ctrl+Prtsc", "Ctrl+Alt+E", "Ctrl+Alt+I"],
 }
 
 TRAY_SETTINGS, TRAY_QUIT, TRAY_OCR, TRAY_PIN, TRAY_NOTE, TRAY_RAG = \
@@ -114,6 +107,7 @@ class App:
         self.popup_open = False
         self.settings = None
         self.mini_btn = None
+        self.action_menu = None         # 热键唤起的动词菜单（v1.7.3，单例）
         self.drag = None                # 鼠标拖选钩子（Win32 线程）
         # ---- 跨线程状态（v1.6.7 ③ 审计后剩余项 + 归属注释）----
         # _selecting：写=主线程（open_ocr/open_pin 及选区回调 finally），
@@ -366,6 +360,8 @@ class App:
             return
         if self.popup_open:                      # 悬浮窗开着就不打扰
             return
+        if self.action_menu and not self.action_menu.closed:   # 动作菜单开着不抢
+            return
         if not (self.cfg.get("mini_button", True)):
             return
         if self.mini_btn and not self.mini_btn.closed:
@@ -419,11 +415,24 @@ class App:
                     self._capture_for_note()
                 elif kind == "rag":
                     self._capture_for_rag()
+                elif kind == "text_menu":
+                    self._capture_for_text_menu()
             except Exception:
                 ls.log_exc("CAPTURE-ERROR")
                 traceback.print_exc()
             finally:
                 self._cap_lock.release()
+
+    def _capture_for_text_menu(self):
+        """文字动作菜单抓词：不做「自然语言」过滤——菜单里有便签/问答，
+        代码、术语也该能进菜单；翻译分支在选中后再做过滤。"""
+        text = get_selected_text(first_timeout=0.25)
+        ls.get_logger().info("CAPTURE-DONE kind=text_menu len=%s", len(text or ""))
+        if not text:
+            self.q.put(("toast", ("未获取到选中文本",
+                                  "请先选中文字，再按文字动作菜单快捷键。")))
+            return
+        self.q.put(("text_menu_show", (text, self._last_source)))
 
     def _capture_for_drag(self, pt):
         x, y, src = pt or (0, 0, "")
@@ -496,12 +505,8 @@ class App:
 
     def _hotkey_map(self):
         return [(HK_TRANSLATE, self.cfg.get("hotkey_translate")),
-                (HK_SETTINGS, self.cfg.get("hotkey_settings")),
-                (HK_QUIT, self.cfg.get("hotkey_quit")),
-                (HK_OCR, self.cfg.get("hotkey_ocr")),
-                (HK_PIN, self.cfg.get("hotkey_pin")),
-                (HK_NOTE, self.cfg.get("hotkey_note")),
-                (HK_RAG, self.cfg.get("hotkey_rag"))]
+                (HK_TEXTMENU, self.cfg.get("hotkey_textmenu")),
+                (HK_SHOTMENU, self.cfg.get("hotkey_shotmenu"))]
 
     def _try_register(self, hid, hotkey):
         try:
@@ -510,12 +515,8 @@ class App:
             return False, str(exc)
 
     _HOTKEY_CFG = {HK_TRANSLATE: "hotkey_translate",
-                   HK_SETTINGS: "hotkey_settings",
-                   HK_QUIT: "hotkey_quit",
-                   HK_OCR: "hotkey_ocr",
-                   HK_PIN: "hotkey_pin",
-                   HK_NOTE: "hotkey_note",
-                   HK_RAG: "hotkey_rag"}
+                   HK_TEXTMENU: "hotkey_textmenu",
+                   HK_SHOTMENU: "hotkey_shotmenu"}
 
     def _maybe_upgrade_hotkey(self, hid, hotkey):
         """顺延产物自动升级：配置里若存的是『被占用后顺延』的临时组合（即候选列表
@@ -556,9 +557,8 @@ class App:
         - 顺延结果曾只对划词翻译键持久化，其他键每次启动都重新报一遍。
         另外本程序内部不允许两个功能抢同一组合（后注册的直接走顺延）。
         """
-        labels = {HK_TRANSLATE: "划词翻译", HK_SETTINGS: "打开设置",
-                  HK_QUIT: "退出程序", HK_OCR: "截图翻译", HK_PIN: "截图对照",
-                  HK_NOTE: "置顶便签", HK_RAG: "快捷提问(RAG)"}
+        labels = {HK_TRANSLATE: "划词翻译", HK_TEXTMENU: "文字动作菜单",
+                  HK_SHOTMENU: "截图动作菜单"}
         failed, notes = [], []
         used = set()
         for hid, hotkey in self._hotkey_map():
@@ -631,25 +631,14 @@ class App:
         if msg == wa.WM_HOTKEY:
             if wparam == HK_TRANSLATE:
                 self._do_translate()
-            elif wparam == HK_OCR:
-                self.q.put(("ocr_select", None))
-            elif wparam == HK_PIN:
-                self.q.put(("pin_select", None))
-            elif wparam == HK_NOTE:
+            elif wparam == HK_TEXTMENU:
                 # 此刻前台还是用户正在读的窗口（抓词模拟 Ctrl+C 后焦点可能
-                # 变化），立刻记下标题当便签来源
+                # 变化），立刻记下标题当来源（便签段头/问答来源用）
                 hwnd = wa.get_foreground_window()
                 self._last_source = wa.get_window_title(hwnd)
-                self.q.put(("note", None))
-            elif wparam == HK_RAG:
-                # 与便签同理：抓词前先记来源窗口标题
-                hwnd = wa.get_foreground_window()
-                self._last_source = wa.get_window_title(hwnd)
-                self.q.put(("rag", None))
-            elif wparam == HK_SETTINGS:
-                self.q.put(("settings", None))
-            elif wparam == HK_QUIT:
-                self.q.put(("quit", None))
+                self._request_capture("text_menu")
+            elif wparam == HK_SHOTMENU:
+                self.q.put(("shot_menu", None))
             return True
         if msg == wa.WM_APP_DRAG_END:
             self._handle_drag_end()
@@ -777,6 +766,11 @@ class App:
         elif kind == "note_text":
             text, source = payload
             self.open_note(text, source)
+        elif kind == "text_menu_show":
+            text, source = payload
+            self._show_action_menu_text(text, source)
+        elif kind == "shot_menu":
+            self.open_shot_menu()
         elif kind == "pin_close":
             for w in list(self.pin_wins):
                 w.close()
@@ -854,6 +848,72 @@ class App:
             return
         self.open_note(text, self._mini_source or "")
 
+    def mini_ask(self, text):
+        """迷你按钮『问』点击（主线程）：选中文字作背景打开 RAG 问答窗。"""
+        self._hide_mini_button()
+        if not (text or "").strip():
+            return
+        self.open_qa(text, self._mini_source or "")
+
+    # ------------------------------------------------------------ 动作菜单
+    def _show_action_menu_text(self, text, source):
+        """文字动作菜单（主线程）：1 翻译 / 2 便签 / 3 问答。
+
+        文字随闭包透传——热键路径已抓好的词不再重复抓。翻译分支选中后才
+        做自然语言过滤（便签/问答接受代码、术语）。
+        """
+        self._hide_mini_button()
+        if self.action_menu and not self.action_menu.closed:
+            self.action_menu.close()
+        x, y = wa.get_cursor_pos()
+        items = [("1", "翻译", lambda: self._menu_translate(text)),
+                 ("2", "便签", lambda: self.open_note(text, source)),
+                 ("3", "问答", lambda: self.open_qa(text, source))]
+        try:
+            self.action_menu = ActionMenu(self, x, y, items)
+        except Exception as exc:
+            ls.log_exc("ACTIONMENU-FAIL")
+            self.q.put(("toast", ("动作菜单创建失败", str(exc))))
+
+    def _menu_translate(self, text):
+        """菜单『翻译』分支：沿用热键路径的自然语言过滤。"""
+        if not looks_translatable(text):
+            self.q.put(("toast", ("这段内容看起来不是自然语言", text[:160])))
+            return
+        self._translate_text(text)
+
+    def open_shot_menu(self):
+        """截图动作菜单（主线程）：框选屏幕 → 抓屏 → 1 对照 / 2 OCR。
+
+        先框选后选动词：用户先看到截了什么再决定用途；位图随闭包透传。
+        """
+        if self.ocr_selector:
+            return
+        self._selecting = True              # 选区流程标志：钩子别把拖拽当划词
+        self.ocr_selector = RegionSelector(
+            self, self._shot_region_selected,
+            title="拖拽框选要截取的屏幕区域 · Esc 取消（截图菜单）")
+
+    def _shot_region_selected(self, x, y, w, h):
+        """框选完成（主线程）：立即抓屏（毫秒级）→ 弹 1 对照 / 2 OCR。"""
+        try:
+            self.ocr_selector = None
+            try:
+                data = wa.grab_screen_bmp(x, y, w, h)
+            except Exception as exc:
+                self.q.put(("toast", ("截图失败", str(exc))))
+                return
+            x2, y2 = wa.get_cursor_pos()
+            items = [("1", "对照", lambda: self._pin_from_data(data)),
+                     ("2", "OCR", lambda: self._ocr_from_data(data))]
+            try:
+                self.action_menu = ActionMenu(self, x2, y2, items)
+            except Exception as exc:
+                ls.log_exc("ACTIONMENU-FAIL")
+                self.q.put(("toast", ("动作菜单创建失败", str(exc))))
+        finally:
+            self._selecting = False
+
     # ------------------------------------------------------------ 截图翻译
     def open_ocr(self):
         """进入截图选区（主线程）。遮罩已开着就不重复弹。"""
@@ -868,32 +928,36 @@ class App:
             self.ocr_selector = None
             try:
                 data = wa.grab_screen_bmp(x, y, w, h)
-                # v1.6.10 P2-1：每次截图用唯一临时文件——固定同名路径会让
-                # 「job1 入队未跑、job2 已覆盖写」时 job1 读到 job2 的图
-                # （快速连发两次截图会重复出结果）。payload 带各自路径即无覆盖。
-                fd, path = tempfile.mkstemp(prefix="qt_ocr_", suffix=".bmp")
-                os.close(fd)
-                try:
-                    with open(path, "wb") as f:
-                        f.write(data)
-                except Exception:
-                    try:
-                        os.unlink(path)
-                    except Exception:
-                        pass
-                    raise
             except Exception as exc:
                 self.q.put(("toast", ("截图失败", str(exc))))
                 return
-            self.q.put(("toast", ("QuickTool 截图", "正在识别文字…")))
-            # v1.6.7 ③：图片路径随 job payload 直达 JobWorker（1~3s 的
-            # PowerShell OCR 不进主线程也不进钩子线程），不再经共享属性
-            # _ocr_img + WM_APP_OCR_RUN 中转——避免「旧 job 未开跑就被
-            # 下一次选区覆盖路径」的跨线程错拿。
-            self._job_q.put(("ocr", path))
+            self._ocr_from_data(data)
         finally:
-            # 同 _pin_region_selected：选区流程结束才放行钩子
             self._selecting = False
+
+    def _ocr_from_data(self, data):
+        """位图 → 唯一临时文件 → OCR 任务入队（v1.7.3 从选区回调抽出，
+        供托盘直达与截图动作菜单共用）。"""
+        # v1.6.10 P2-1：每次截图用唯一临时文件——固定同名路径会让
+        # 「job1 入队未跑、job2 已覆盖写」时 job1 读到 job2 的图
+        # （快速连发两次截图会重复出结果）。payload 带各自路径即无覆盖。
+        fd, path = tempfile.mkstemp(prefix="qt_ocr_", suffix=".bmp")
+        os.close(fd)
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+        except Exception:
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
+            raise
+        self.q.put(("toast", ("QuickTool 截图", "正在识别文字…")))
+        # v1.6.7 ③：图片路径随 job payload 直达 JobWorker（1~3s 的
+        # PowerShell OCR 不进主线程也不进钩子线程），不再经共享属性
+        # _ocr_img + WM_APP_OCR_RUN 中转——避免「旧 job 未开跑就被
+        # 下一次选区覆盖路径」的跨线程错拿。
+        self._job_q.put(("ocr", path))
 
     def _run_ocr(self, img):
         """JobWorker 线程：PowerShell 子进程跑 OCR（约 1~3s，不碰 UI）。"""
@@ -952,46 +1016,50 @@ class App:
             title="拖拽框选要截取的屏幕区域 · Esc 取消（对照小窗）")
 
     def _pin_region_selected(self, x, y, w, h):
-        """选区完成（主线程）：GDI 抓屏（毫秒级）-> 置顶对照小窗。
-
-        支持多个对照窗并存：新截图追加到 pin_wins 列表（不再替换旧的）。
-        达到 PIN_MAX 上限时提示先关闭一个。
-        """
+        """选区完成（主线程）：GDI 抓屏（毫秒级）-> 置顶对照小窗。"""
         try:
             self.ocr_selector = None
-            active = [p for p in self.pin_wins if not p.closed]
-            if len(active) >= self.PIN_MAX:
-                self.q.put(("toast", ("截图对照已满",
-                                      f"最多同时保留 {self.PIN_MAX} 个对照窗，"
-                                      "请先关闭一个（Esc 或右上角 ✕）。")))
-                return
             try:
                 data = wa.grab_screen_bmp(x, y, w, h)
             except Exception as exc:
                 self.q.put(("toast", ("截图失败", str(exc))))
                 return
-            # 同 Win+Shift+S：截图自动进剪贴板（CF_DIB），可立即 Ctrl+V 粘贴。
-            # 失败不阻塞——只是不能粘贴，小窗照常显示。
-            clip_ok = wa.set_clipboard_image(data)
-            if not clip_ok:
-                ls.get_logger().info("PIN-CLIP-FAIL")
-            try:
-                win = PinWindow(self, data, index=len(active) + 1)
-                self.pin_wins.append(win)
-            except Exception as exc:
-                ls.log_exc("PIN-FAIL")
-                self.q.put(("toast", ("截图对照失败", str(exc))))
-                return
-            ls.get_logger().info("PIN-SHOW size=%sx%s total=%s",
-                                 w, h, len(active) + 1)
-            e2e_log(f"PIN_SHOWN total={len(active) + 1}")
-            e2e_log(f"PIN_CLIP={clip_ok}")
+            self._pin_from_data(data)
         finally:
             # 整个选区处理完成才放行钩子：期间 Win32 线程若执行
             # _handle_drag_end（拖拽 LEFTUP 投递的 WM_APP_DRAG_END 消息），
             # 看到 _selecting=True 就不会误判成划词去动剪贴板，避免把
             # 刚写入的 CF_DIB 还原覆盖（v1.5.3 竞态修复）。
             self._selecting = False
+
+    def _pin_from_data(self, data):
+        """位图 → 剪贴板 + 对照小窗（v1.7.3 从选区回调抽出，供托盘直达与
+        截图动作菜单共用）。
+
+        支持多个对照窗并存：新截图追加到 pin_wins 列表（不再替换旧的）。
+        达到 PIN_MAX 上限时提示先关闭一个。
+        """
+        active = [p for p in self.pin_wins if not p.closed]
+        if len(active) >= self.PIN_MAX:
+            self.q.put(("toast", ("截图对照已满",
+                                  f"最多同时保留 {self.PIN_MAX} 个对照窗，"
+                                  "请先关闭一个（Esc 或右上角 ✕）。")))
+            return
+        # 同 Win+Shift+S：截图自动进剪贴板（CF_DIB），可立即 Ctrl+V 粘贴。
+        # 失败不阻塞——只是不能粘贴，小窗照常显示。
+        clip_ok = wa.set_clipboard_image(data)
+        if not clip_ok:
+            ls.get_logger().info("PIN-CLIP-FAIL")
+        try:
+            win = PinWindow(self, data, index=len(active) + 1)
+            self.pin_wins.append(win)
+        except Exception as exc:
+            ls.log_exc("PIN-FAIL")
+            self.q.put(("toast", ("截图对照失败", str(exc))))
+            return
+        ls.get_logger().info("PIN-SHOW total=%s", len(active) + 1)
+        e2e_log(f"PIN_SHOWN total={len(active) + 1}")
+        e2e_log(f"PIN_CLIP={clip_ok}")
 
     def open_note(self, text, source=""):
         """置顶便签：单窗口累积——已有便签就追加一段，没有就新建。"""
@@ -1187,6 +1255,8 @@ class App:
             self.popup.close()
         if self.mini_btn:
             self.mini_btn.close()
+        if self.action_menu and not self.action_menu.closed:
+            self.action_menu.close()
         for w in list(self.pin_wins):
             w.close()
         if self.note_win:

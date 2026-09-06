@@ -263,9 +263,13 @@ class MiniButton:
 
     SIZE = 26          # 单个圆形按钮直径
     GAP = 2            # 两圆间隙
-    LABELS = ("译", "便")   # 顺序即回调分流顺序：0=翻译，1=便签
+    LABELS = ("译", "便", "问")   # 顺序即回调分流：0=翻译，1=便签，2=RAG 问答
     HIDE_MS = 2200       # 出现后自动消失的时间（鼠标进入即暂停计时）
     FONT_SIZE = 11
+    # 色键透明（v1.7.3）：窗口背景刷成 MAGIC 色，圆外区域完全透明且点击穿透
+    # ——点两圆缝隙直接落到下层应用，没有死区。Tk canvas 的 oval 无抗锯齿，
+    # 边缘像素非填充即背景，色键不会留毛边。MAGIC 必须避开一切内容色。
+    MAGIC = "#010203"
 
     @property
     def width(self):
@@ -286,6 +290,12 @@ class MiniButton:
         win.attributes("-topmost", True)
         win.attributes("-alpha", 0.92)
         self._draw(th)
+        # 色键透明：背景色像素既不显示也不参与命中测试（Windows 分层窗口
+        # LWA_COLORKEY，与 LWA_ALPHA 可并存）。不支持时静默跳过，退回矩形底。
+        try:
+            win.attributes("-transparentcolor", self.MAGIC)
+        except Exception:
+            pass
         self._place(x, y)
         self._bind()
         self._schedule_hide(self.HIDE_MS)
@@ -294,7 +304,7 @@ class MiniButton:
     def _draw(self, th):
         s = self.SIZE
         cv = tk.Canvas(self.win, width=self.width, height=s, highlightthickness=0,
-                       bg=th["card"], cursor="hand2")
+                       bg=self.MAGIC, cursor="hand2")
         cv.pack()
         for i, label in enumerate(self.LABELS):
             x0 = i * (s + self.GAP)
@@ -359,14 +369,16 @@ class MiniButton:
         self._paint_hot()
 
     def _click(self, event=None):
-        """按落点 x 分流：左『译』走翻译，右『便』加入便签。"""
+        """按落点 x 分流：0『译』翻译，1『便』便签，2『问』RAG 问答。"""
         text = self.text
         idx = self._index_at(getattr(event, "x", 0) or 0)
         self.close()
         if idx == 0:
             self.app.mini_translate(text)
-        else:
+        elif idx == 1:
             self.app.mini_note(text)
+        else:
+            self.app.mini_ask(text)
 
     def get_rect(self):
         """屏幕坐标矩形 (left, top, right, bottom)，供鼠标钩子忽略自身区域。"""
@@ -398,6 +410,159 @@ class MiniButton:
             pass
         if getattr(self.app, "mini_btn", None) is self:
             self.app.mini_btn = None
+
+
+# ================================================================== 动作菜单
+class ActionMenu(tk.Toplevel):
+    """热键唤起的就近动词菜单（v1.7.3）。
+
+    文字场景：1 翻译 / 2 便签 / 3 问答（抓到的文字随闭包透传，免二次抓词）；
+    截图场景：框选完成后 1 对照 / 2 OCR（位图随闭包透传）。
+
+    交互约定：数字键 1..9 直达（绑定在菜单自身，仅聚焦时生效，不占全局
+    热键）、点击行触发、Esc 关闭、自动消失（进入暂停计时）、失焦即关。
+    窗口骨架复用迷你按钮的成熟路径（无边框+置顶+工具窗+显示器内夹紧）。
+    """
+
+    ROW_H = 26          # 单行高
+    PAD = 4             # 上下内边距
+    WIDTH = 128         # 固定宽：数字列 + 标签列
+    HIDE_MS = 5000      # 自动消失（菜单项比双按钮多，给长一点）
+    FONT_SIZE = 11
+
+    def __init__(self, app, x, y, items):
+        """items: [(digit:str, label:str, fn:callable), ...]，fn 由调用方闭包
+        携带动作所需的文字/位图等 payload。"""
+        self.app = app
+        self.items = items
+        self.closed = False
+        self._hide_job = None
+        self.th = th = current_theme(app)
+
+        win = tk.Toplevel(app.root)
+        self.win = win
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.attributes("-alpha", 0.97)
+        self._draw(th)
+        self._place(x, y)
+        self._bind()
+        self._schedule_hide(self.HIDE_MS)
+        win.after(30, lambda: wa.set_tool_window(win.winfo_id(), True))
+        try:
+            win.focus_force()               # 数字键直达的前提：菜单持有焦点
+        except Exception:
+            pass
+
+    @property
+    def height(self):
+        return self.ROW_H * len(self.items) + self.PAD * 2
+
+    def _draw(self, th):
+        cv = tk.Canvas(self.win, width=self.WIDTH, height=self.height,
+                       highlightthickness=0, bg=th["card"], cursor="hand2")
+        cv.pack()
+        self.cv = cv
+        self._hot = -1
+        for i, (digit, label, _fn) in enumerate(self.items):
+            y0 = self.PAD + i * self.ROW_H
+            cv.create_rectangle(2, y0, self.WIDTH - 2, y0 + self.ROW_H - 2,
+                                fill=th["card"], outline=th["border"], width=1,
+                                tags=(f"bg{i}", "bg"))
+            cv.create_text(16, y0 + self.ROW_H // 2, text=digit,
+                           fill=th["sub"], font=("Microsoft YaHei UI", 9, "bold"))
+            cv.create_text(34, y0 + self.ROW_H // 2, text=label, anchor="w",
+                           fill=th["fg"],
+                           font=("Microsoft YaHei UI", self.FONT_SIZE))
+
+    def _place(self, x, y):
+        left, top, right, bottom = wa.get_work_area_at(x, y)
+        px = min(x + 10, right - self.WIDTH - 6)
+        py = y + 14
+        if py + self.height > bottom:
+            py = max(top + 6, y - self.height - 10)
+        px = max(left + 6, px)
+        self.win.geometry(f"{self.WIDTH}x{self.height}+{int(px)}+{int(py)}")
+        self.win.update_idletasks()
+
+    def _bind(self):
+        self.cv.bind("<Button-1>", self._click)
+        self.cv.bind("<Motion>", lambda e=None: self._hot_move(e.y))
+        self.cv.bind("<Leave>", lambda e=None: (self._hover(-1),
+                                                self._schedule_hide(1500)))
+        self.win.bind("<Enter>",
+                      lambda e=None: self._cancel_hide())
+        self.win.bind("<Escape>", lambda e=None: self.close())
+        self.win.bind("<FocusOut>", lambda e=None: self.close())
+        for digit, _label, _fn in self.items:
+            self.win.bind(str(digit), lambda e=None, d=digit: self._pick(d))
+
+    def _index_at(self, y):
+        i = (y - self.PAD) // self.ROW_H
+        n = len(self.items)
+        return 0 if i < 0 else (n - 1 if i > n - 1 else i)
+
+    def _hot_move(self, y):
+        i = self._index_at(y)
+        if i == self._hot:
+            return
+        self._hot = i
+        self._paint_hot()
+
+    def _hover(self, i):
+        self._hot = i
+        self._paint_hot()
+
+    def _paint_hot(self):
+        try:
+            for i in range(len(self.items)):
+                self.cv.itemconfigure(
+                    f"bg{i}",
+                    fill=self.th["hover"] if i == self._hot else self.th["card"])
+        except Exception:
+            pass
+
+    def _click(self, event=None):
+        idx = self._index_at(getattr(event, "y", self.PAD) or self.PAD)
+        self.close()
+        try:
+            self.items[idx][2]()
+        except Exception:
+            pass
+
+    def _pick(self, digit):
+        for d, _label, fn in self.items:
+            if d == str(digit):
+                self.close()
+                try:
+                    fn()
+                except Exception:
+                    pass
+                return
+
+    def _schedule_hide(self, delay):
+        self._cancel_hide()
+        self._hide_job = self.win.after(delay, self.close)
+
+    def _cancel_hide(self):
+        if self._hide_job is not None:
+            try:
+                self.win.after_cancel(self._hide_job)
+            except Exception:
+                pass
+            self._hide_job = None
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self._cancel_hide()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
+        if getattr(self.app, "action_menu", None) is self:
+            self.app.action_menu = None
 
 
 # ================================================================== 截图选区
@@ -1542,20 +1707,20 @@ class Settings(tk.Toplevel):
     def _section_hotkey(self, root):
         f = self._frame(root, "快捷键（点输入框后直接按下组合键即可录制）")
         self.hk_vars = {}
+        # v1.7.3 收敛为 3 个全局热键：划词直达 + 两个场景动作菜单。
+        # 便签/问答/截图翻译/截图对照改由菜单与托盘触达，不再各占热键。
         for key, label in (("hotkey_translate", "划词翻译"),
-                           ("hotkey_ocr", "截图翻译"),
-                           ("hotkey_pin", "截图对照"),
-                           ("hotkey_note", "置顶便签"),
-                           ("hotkey_rag", "快捷提问(RAG)"),
-                           ("hotkey_settings", "打开设置"),
-                           ("hotkey_quit", "退出程序")):
+                           ("hotkey_textmenu", "文字动作菜单"),
+                           ("hotkey_shotmenu", "截图动作菜单")):
             var = tk.StringVar(value=self.cfg.get(key))
             self.hk_vars[key] = var
             e = ttk.Entry(f, textvariable=var, width=18)
             self._row(f, label, e)
             e.bind("<KeyPress>", lambda ev=None, v=var: self._capture(ev, v))
-        tk.Label(f, text="注意：录制时全局热键也会同时触发一次，属正常现象。\n"
-                         "若默认组合被其他程序占用，启动时会自动改用下方显示的备用组合。",
+        tk.Label(f, text="文字菜单：抓取选中文字后弹 1 翻译 / 2 便签 / 3 问答。\n"
+                         "截图菜单：框选屏幕后弹 1 对照 / 2 OCR。\n"
+                         "录制时全局热键也会同时触发一次，属正常现象；"
+                         "被占用时启动会自动改用备用组合。",
                  fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8),
                  justify="left", anchor="w").pack(anchor="w")
@@ -1751,7 +1916,7 @@ class Settings(tk.Toplevel):
         ttk.Button(f, text="打开配置目录",
                    command=lambda: self.app.open_config_dir()).pack(side="left", padx=6)
         ttk.Button(f, text="退出程序", command=self.app.quit).pack(side="right")
-        tk.Label(f, text="QuickTool v1.7.2 · 零第三方依赖",
+        tk.Label(f, text="QuickTool v1.7.3 · 零第三方依赖",
                  fg=self.th["sub"], bg=self.th["win"],
                  font=("Microsoft YaHei UI", 8)).pack(side="right", padx=10)
 

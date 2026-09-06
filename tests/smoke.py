@@ -59,9 +59,13 @@ dirty = "the perfor-\nmance is signifi-\ncantly better"
 clean = normalize_text(dirty)
 check("断词合并", clean == "the performance is significantly better", f"-> {clean!r}")
 
-print("\n== 3.5 热键顺延表（回归：必须用 HK_* 整数做键）==")
+print("\n== 3.5 热键顺延表（回归：必须用 HK_* 整数做键；v1.7.3 起收敛 3 键）==")
 import main as _m
-for _hid in (_m.HK_TRANSLATE, _m.HK_SETTINGS, _m.HK_QUIT, _m.HK_OCR, _m.HK_PIN):
+check("热键收敛为 3 个（划词 + 两场景菜单）",
+      (_m.HK_TRANSLATE, _m.HK_TEXTMENU, _m.HK_SHOTMENU) == (1, 2, 3)
+      and len(_m.HOTKEY_CANDIDATES) == 3,
+      f"candidates={sorted(_m.HOTKEY_CANDIDATES)}")
+for _hid in (_m.HK_TRANSLATE, _m.HK_TEXTMENU, _m.HK_SHOTMENU):
     check(f"候选表含 hid={_hid}", bool(_m.HOTKEY_CANDIDATES.get(_hid)),
           f"-> {_m.HOTKEY_CANDIDATES.get(_hid, [])[:2]}")
 
@@ -362,6 +366,7 @@ try:
     fake3.pin_wins = []
     fake3.popup_open = False
     fake3.mini_btn = None
+    fake3.action_menu = None      # v1.7.3 动作菜单守卫
     fake3.note_win = None            # v1.6.0 守卫新增引用：无便签时为 None
     fake3.cfg = type("C", (), {
         "get": lambda s, k, d=None: True if k == "mini_button" else d})()
@@ -447,6 +452,7 @@ try:
     fakeb.note_win = None
     fakeb.popup_open = False
     fakeb.mini_btn = None
+    fakeb.action_menu = None      # v1.7.3 动作菜单守卫
     fakeb.cfg = type("C", (), {
         "get": lambda s, k, d=None: True if k == "mini_button" else d})()
     fakeb._drag_box = (50, 60, 90, 100)
@@ -744,7 +750,8 @@ try:
     st = _Settings(fake5)
     st.update_idletasks()
     st.update()
-    check("热键区 7 个录制框", len(st.hk_vars) == 7, f"-> {len(st.hk_vars)}")
+    check("热键区 3 个录制框（v1.7.3 收敛）", len(st.hk_vars) == 3,
+          f"-> {len(st.hk_vars)}")
     # 热键 LabelFrame = 含恰好 7 个 TEntry 的那个 LabelFrame（递归找，
     # inner 在 Canvas 里深度 3 层）
     def _labelframes_of(w):
@@ -755,14 +762,14 @@ try:
             out.extend(_labelframes_of(c))
         return out
 
-    lfs = [lf for lf in _labelframes_of(st) if len(_entries_of(lf)) == 7]
+    lfs = [lf for lf in _labelframes_of(st) if len(_entries_of(lf)) == 3]
     if lfs:
         es = _entries_of(lfs[0])
         xs = {e.winfo_x() for e in es}
         ys = sorted(e.winfo_y() for e in es)
-        check("热键输入框同列竖排", len(es) == 7 and len(xs) == 1,
+        check("热键输入框同列竖排", len(es) == 3 and len(xs) == 1,
               f"n={len(es)} xs={sorted(xs)}")
-        check("热键输入框逐行排列", len(ys) == 7
+        check("热键输入框逐行排列", len(ys) == 3
               and all(b - a > 10 for a, b in zip(ys, ys[1:])), f"ys={ys}")
         # z-order 回归（v1.6.1 报障）：in_ pack 不改 z-order，后创建的行 Frame
         # 会盖住先创建的 Entry —— 点击命中行 Frame，输入框既看不见也点不了。
@@ -781,7 +788,7 @@ try:
         # 值可见性同源：Entry.get 应等于配置值（被遮挡时值在但渲染被盖）
         check("热键值正常读出", e0.get() == "Ctrl+Q", f"-> {e0.get()!r}")
     else:
-        check("热键输入框同列竖排", False, "未找到含 7 个 Entry 的 LabelFrame")
+        check("热键输入框同列竖排", False, "未找到含 3 个 Entry 的 LabelFrame")
     # 内容区不得横向撑爆（错乱时 Canvas 里的 inner 自然宽 ~2000px）
     def _canvas_of(w):
         for c in w.winfo_children():
@@ -801,7 +808,7 @@ except Exception as exc:
     import traceback; traceback.print_exc()
     check("Settings 布局子系统", False, repr(exc))
 
-print("\n== 6.11 迷你按钮『译』『便』双按钮（v1.6.3）==")
+print("\n== 6.11 迷你按钮『译』『便』『问』三按钮（v1.6.3 双按钮 → v1.7.3 三按钮）==")
 # 拖选文字后弹出的迷你按钮从单个『译』扩成『译』+『便』并排：
 # 点『便』= 把选中文字钉进置顶便签（等同 Ctrl+Alt+N，但省掉一次抓词）。
 try:
@@ -815,16 +822,21 @@ try:
     fake6.mini_btn = None
     fake6.mini_translate = lambda t: calls6.append(("translate", t))
     fake6.mini_note = lambda t: calls6.append(("note", t))
+    fake6.mini_ask = lambda t: calls6.append(("ask", t))
 
     mb = _MiniButton(fake6, 100, 100, "测试文本")
     mb.win.update_idletasks()
     mb.win.update()
-    check("按钮条宽 = 两圆 + 间隙", mb.width == 26 * 2 + 2, f"-> {mb.width}")
+    check("按钮条宽 = 三圆 + 两间隙", mb.width == 26 * 3 + 2 * 2, f"-> {mb.width}")
     check("窗口几何与按钮条同宽", mb.win.winfo_width() == mb.width,
           f"{mb.win.winfo_width()} vs {mb.width}")
-    circles = [mb.cv.find_withtag(f"bg{i}") for i in (0, 1)]
-    labels = [mb.cv.find_withtag(f"txt{i}") for i in (0, 1)]
-    check("两个圆都画出", all(circles), f"{circles}")
+    circles = [mb.cv.find_withtag(f"bg{k}") for k in (0, 1, 2)]
+    labels = [mb.cv.find_withtag(f"txt{k}") for k in (0, 1, 2)]
+    check("三个圆都画出", all(circles), f"{circles}")
+    check("按钮文字为『译』『便』『问』",
+          [mb.cv.itemcget(labels[k], "text") for k in (0, 1, 2)]
+          == ["译", "便", "问"],
+          f"{[mb.cv.itemcget(labels[k], 'text') for k in (0, 1, 2)]}")
     check("按钮文字为『译』『便』",
           [mb.cv.itemcget(labels[i], "text") for i in (0, 1)] == ["译", "便"],
           f"{[mb.cv.itemcget(labels[i], 'text') for i in (0, 1)]}")
@@ -834,8 +846,12 @@ try:
     check("两圆横向并排不重叠", c1[0] - c0[0] == 26 + 2, f"{c0[0]} -> {c1[0]}")
     # 落点 -> 按钮索引（步长为 SIZE+GAP=28）
     check("x 坐标映射按钮索引",
-          (mb._index_at(5), mb._index_at(40)) == (0, 1),
-          f"5->{mb._index_at(5)}, 40->{mb._index_at(40)}")
+          (mb._index_at(5), mb._index_at(40), mb._index_at(68)) == (0, 1, 2),
+          f"5->{mb._index_at(5)}, 40->{mb._index_at(40)}, 68->{mb._index_at(68)}")
+    # 色键透明（v1.7.3）：圆外完全透明且点击穿透
+    _tc = mb.win.attributes("-transparentcolor")
+    check("背景色键透明已生效",
+          str(_tc).lower() == _MiniButton.MAGIC, f"tc={_tc}")
     # 钩子忽略区须覆盖整条（否则点『便』会被当成新一次拖选的起点）
     r = mb.get_rect()
     check("忽略区覆盖整条按钮", r is not None and r[2] - r[0] == mb.width + 4,
@@ -850,6 +866,12 @@ try:
     mb._click(type("E", (), {"x": 40})())
     check("点『便』调用 mini_note", calls6 == [("note", "测试文本")], f"{calls6}")
     check("点后按钮自行关闭", mb.closed)
+    # 点最右『问』-> mini_ask（RAG 问答，v1.7.3）
+    calls6.clear()
+    mb5 = _MiniButton(fake6, 100, 100, "问号文本")
+    mb5.win.update_idletasks()
+    mb5._click(type("E", (), {"x": 68})())
+    check("点『问』调用 mini_ask", calls6 == [("ask", "问号文本")], f"{calls6}")
     # 点左侧『译』-> mini_translate
     calls6.clear()
     mb2 = _MiniButton(fake6, 100, 100, "另一段")
@@ -2355,6 +2377,59 @@ try:
 except Exception as exc:
     import traceback; traceback.print_exc()
     check("模型历史子系统", False, repr(exc))
+
+print("\n== 6.28 动作菜单（v1.7.3：热键收敛后的就近动词菜单）==")
+try:
+    from qt.ui import ActionMenu as _AM
+
+    calls28 = []
+    fake28 = type("App", (), {})()
+    fake28.root = tk.Tk()
+    fake28.root.withdraw()
+    fake28.cfg = {"popup.theme": "dark"}
+    fake28.action_menu = None
+    items28 = [("1", "翻译", lambda: calls28.append("t")),
+               ("2", "便签", lambda: calls28.append("b")),
+               ("3", "问答", lambda: calls28.append("q"))]
+    am = _AM(fake28, 100, 100, items28)
+    am.win.update_idletasks()
+    check("菜单几何 = 行数×行高 + 上下边距",
+          am.height == 26 * 3 + 8 and am.win.winfo_height() == am.height,
+          f"h={am.win.winfo_height()}/{am.height}")
+    check("数字键绑定齐备", all(am.win.bind(str(d)) for d, _, _ in items28),
+          f"{[am.win.bind(str(d)) for d, _, _ in items28]}")
+    check("y 坐标映射行索引",
+          (am._index_at(6), am._index_at(40), am._index_at(70)) == (0, 1, 2),
+          f"6->{am._index_at(6)}, 40->{am._index_at(40)}, 70->{am._index_at(70)}")
+    am._hot_move(40)
+    check("悬停高亮当前行",
+          am.cv.itemcget("bg1", "fill") == _THEMES["dark"]["hover"]
+          and am.cv.itemcget("bg0", "fill") == _THEMES["dark"]["card"],
+          f"bg1={am.cv.itemcget('bg1', 'fill')}")
+    am._pick("3")
+    check("数字键 3 触发问答并关菜单", calls28 == ["q"] and am.closed,
+          f"{calls28} closed={am.closed}")
+    calls28.clear()
+    am2 = _AM(fake28, 100, 100, items28)
+    am2._click(type("E", (), {"y": 8})())
+    check("点击第 1 行触发翻译并关菜单", calls28 == ["t"] and am2.closed,
+          f"{calls28} closed={am2.closed}")
+    am2.close()
+    check("关闭幂等（重复 close 不抛错）", am2.closed)
+    # App 热键注册映射收敛为 3 项
+    _a28 = _m.App.__new__(_m.App)
+    _a28.cfg = _cmod.Config()
+    _a28.cfg.path = os.path.join(tempfile.mkdtemp(prefix="qt_cfg_628_"),
+                                 "config.json")
+    _a28.cfg.data = _json.loads(_json.dumps(_cmod.DEFAULTS))
+    _hk28 = _m.App._hotkey_map(_a28)
+    check("热键注册映射收敛 3 项（划词/文字菜单/截图菜单）",
+          len(_hk28) == 3 and [h for h, _ in _hk28] == [1, 2, 3]
+          and all(v for _, v in _hk28), f"{_hk28}")
+    fake28.root.destroy()
+except Exception as exc:
+    import traceback; traceback.print_exc()
+    check("ActionMenu 子系统", False, repr(exc))
 
 print(f"\n==== 通过 {ok} 项，失败 {fail} 项 ====")
 sys.exit(1 if fail else 0)
