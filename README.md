@@ -1,70 +1,68 @@
-# QuickTool · 极简 Windows 效率工具集
+# QuickTool · Windows 效率工具箱
 
-划词翻译 / 截图 OCR / 截图对照 / 置顶便签 / **本地 RAG 快捷问答**——一个常驻托盘的小工具箱。其中 RAG 问答内置**完整的五阶段检索流水线**（查询变体 → BM25+向量双路召回 → RRF 融合 → Rerank 精排 → 流式生成），全链路运行时**零第三方依赖**（SQLite FTS5 全文检索 + urllib 调云端向量/重排；唯一例外是 PDF 解析用 pypdf）。单文件 exe 约 **24 MB**，常驻内存 **~26 MB**，冷启动 **~1.1 秒**，绿色免安装。
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+![Release](https://img.shields.io/github/v/release/wysdshg/QuickTool)
+![Tests](https://img.shields.io/badge/tests-285%20smoke%20%2B%2014%20e2e-brightgreen)
 
-| 快捷键 / 操作 | 功能 |
+划词翻译 / 截图 OCR / 截图对照 / 置顶便签 / **本地 RAG 快捷问答**——常驻托盘，绿色免安装。
+
+| 关键指标 | 数值 |
 |---|---|
-| `Ctrl+Q` | 划词翻译直达（被占用时自动顺延到 `Ctrl+Alt+T` → `Ctrl+Alt+F1` → …） |
-| **鼠标拖选文字** | 松手后自动在光标旁弹出「译」「便」「问」三个圆形迷你按钮（v1.7.3 起透明背景、缝隙点击穿透）：点「译」即翻译，点「便」钉进置顶便签，点「问」以选中内容为背景打开 RAG 问答 |
-| `Ctrl+Alt+Q` | 文字动作菜单（v1.7.3）：抓取选中文字后弹 `1 翻译 / 2 便签 / 3 问答`，数字键直达 |
-| `Ctrl+Alt+W` | 截图动作菜单（v1.7.3）：框选屏幕后弹 `1 对照 / 2 OCR`，数字键直达 |
-| `Esc` / 点击别处 / 再按一次热键 | 关闭悬浮窗 / 菜单 |
-| **托盘图标** | 双击打开设置；右键菜单含全部功能入口（设置 / 截图翻译 / 截图对照 / 置顶便签 / 快捷提问 / 退出） |
-
-> 本仓库交付：**可运行的 `dist/QuickTool.exe` + 完整源码 + 本文档**（exe 与各版本产物同时发布在 GitHub Releases）。
-> 源码全部由 Python 标准库实现（tkinter / ctypes / urllib / winreg / sqlite3），唯一第三方依赖例外是 PDF 文本提取用的 pypdf（纯 Python、零原生扩展，不参与翻译/问答主链路）。
->
-> GitHub：https://github.com/wysdshg/QuickTool
+| 体积 / 内存 / 冷启动 | 24MB 单文件 exe / ~9MB 常驻（工作集 8.6MB 实测）/ ~1.1s（onefile 解压） |
+| 运行时依赖 | **0**（全标准库；唯一例外 pypdf，只服务 PDF 文档库导入） |
+| 自动化测试 | **285 项冒烟 + 14 项端到端**（真起进程、真实按键、真 App 全链路驱动） |
+| 发布 | 已迭代发布 14 个版本（GitHub Releases 同步 exe 产物） |
 
 ---
 
 ## 目录
+
 1. [项目亮点](#项目亮点)
-2. [RAG 快捷问答：五阶段检索流水线（v1.7）](#rag-快捷问答五阶段检索流水线v17)
-3. [开源方案调研与选型](#一开源方案调研与选型)
-4. [技术选型](#二技术选型)
-5. [项目结构](#三项目结构)
-6. [核心实现](#四核心实现)
-7. [翻译接口对比与接入](#五翻译接口对比与接入)
-8. [配置说明](#六配置说明)
-9. [开发者文档（docs/）](#开发者文档docs)
+2. [RAG 快捷问答（v1.7）：五阶段检索流水线](#rag-快捷问答v17五阶段检索流水线)
+3. [功能与快捷键](#功能与快捷键)
+4. [快速开始](#快速开始)
+5. [架构与技术选型](#架构与技术选型)
+6. [核心实现精选](#核心实现精选)
+7. [项目结构](#项目结构)
+8. [开发者文档（docs/）](#开发者文档docs)
 
 ---
 
 ## 项目亮点
 
-- **完整 RAG 五阶段流水线，运行时零第三方依赖**：查询变体（RAG-Fusion）→ BM25（SQLite FTS5 trigram）+ 向量（bge-m3）双路召回 → RRF 融合 → Rerank（bge-reranker-v2-m3）精排 → SSE 流式生成。除云端 embedding/rerank 走 HTTP 接口外，全部基于 Python 标准库实现（sqlite3 / urllib）——clone 下来就能跑，不装任何包。
-- **面向 8B 级小模型的实战调优闭环**：语料 fence 原子化切分、上下文防污染（同节去重 + 代码配额）、检索 query 拼接背景、上下文预算与精排 TopK 联动——实测把两道检索失利的评测题从 **72 → 92**、**70 → 91** 分拉回（同一模型、同一语料，只改检索侧）。
-- **纯 ctypes 手写 Win32**：全局热键（RegisterHotKey + 冲突顺延持久化）、剪贴板全格式快照/还原与进程内互斥、Shell_NotifyIcon 托盘、WH_MOUSE_LL 低级鼠标钩子、DPAPI 凭据加密——不引任何原生扩展。
-- **自动化测试矩阵**：**285 项冒烟**（含源码级防回退守护断言）+ **14 项端到端**（真起进程、SendInput 真实按键、真 App 全链路驱动）+ 并发剪贴板压力（4 线程 × 150 次 0 异常）。
-- **工程克制**：单文件 24MB exe、~9MB 级常驻内存、~1.1s 冷启动、绿色免安装、配置随程序走可放 U 盘。
+- **完整 RAG 五阶段流水线，运行时零第三方依赖**：查询变体（RAG-Fusion）→ BM25（SQLite FTS5 trigram）+ 向量（bge-m3）双路召回 → RRF 融合 → Rerank（bge-reranker-v2-m3）精排 → SSE 流式生成。除云端 embedding/rerank 走 HTTP 接口外全部基于 Python 标准库（sqlite3 / urllib）——clone 下来就能跑，不装任何包。
+- **面向 8B 级小模型的实战调优闭环**：语料 fence 原子化切分、上下文防污染、检索 query 拼接背景、上下文预算与精排 TopK 联动——实测把两道检索失利的评测题从 **72 → 92**、**70 → 91** 分拉回（同一模型、同一语料，只改检索侧）。
+- **纯 ctypes 手写 Win32**：全局热键（RegisterHotKey + 冲突自动顺延持久化）、剪贴板全格式快照/还原与进程内互斥、Shell_NotifyIcon 托盘、WH_MOUSE_LL 低级鼠标钩子、DPAPI 凭据加密——不引任何原生扩展。
+- **自动化测试矩阵**：285 项冒烟（含源码级防回退守护断言）+ 14 项端到端 + 并发剪贴板压力（4 线程 × 150 次 = 600 次操作 0 异常）+ 真 App 驱动诊断脚本（SendInput 真实拖选 → GDI 抓屏 → OCR/截图对照全链路）。
+- **工程克制**：单文件 24MB、~1.1s 冷启动、绿色便携（config.json 随程序走可放 U 盘）、断网也能查词（内置离线词库）。
 
 ---
 
-## RAG 快捷问答：五阶段检索流水线（v1.7）
+## RAG 快捷问答（v1.7）：五阶段检索流水线
 
-> 本项目技术含量最高的部分：在**没有任何第三方库**的前提下，把一套多路召回 + 精排的 RAG 检索引擎做进了常驻托盘的小工具，并针对 8B 级小模型做了一轮完整的实测调优。
+> 本项目技术含量最高的部分：在**没有任何第三方库**的前提下，把一套多路召回 + 精排的 RAG 检索引擎做进了常驻托盘的小工具，并针对 8B 级小模型完成了一轮实测调优。
+
+**用法**：选中术语/问题 → `Ctrl+Alt+Q` 弹文字动作菜单按 `3`（或托盘「快捷提问」）→ 置顶问答窗（多窗并存、流式逐字渲染）→ 回车提问，回答附来源章节。
 
 ### 流水线总览
 
-| 阶段 | 实现 | 说明 |
+| 阶段 | 实现 | 解决什么问题 |
 |---|---|---|
-| ① 查询变体（RAG-Fusion） | LLM 生成 1~5 路改写（设置页可调） | 把「一次问多个概念」拆成子问题分别召回，避免单概念文档霸占候选池 |
+| ① 查询变体（RAG-Fusion） | LLM 生成 1~5 路改写（设置页可调），失败降级仅用原问题 | 「一次问多个概念」拆成子问题分别召回，避免单概念文档霸占候选池 |
 | ② 双路召回 | BM25（SQLite FTS5 trigram + 中文 4 字滑窗）＋ 向量（bge-m3，1024 维） | 关键词与语义互补；未配云端 Key 时自动降级纯 BM25，问答链路不断 |
 | ③ RRF 融合 | 1/(k+rank) 合并两路排序 | 无需调权重的鲁棒融合 |
 | ④ Rerank 精排 | bge-reranker-v2-m3，候选 = top_k × 3 | 解决「余弦分数过密无区分」导致的排序失真 |
-| ⑤ 流式生成 | SSE 输出，`enable_thinking=false` | 关闭思考链，响应提速约 4 倍 |
+| ⑤ 流式生成 | SSE 逐字输出，`enable_thinking=false` | 关闭思考链，响应提速约 4 倍 |
 
-### 针对 8B 级小模型的调优（实测沉淀）
-
-每条都来自真机评测的教训，完整过程见 [docs/11-版本演进与踩坑大事记](docs/11-版本演进与踩坑大事记.md) 的 v1.7.1 / v1.7.2 条目：
+### 针对 8B 级小模型的调优（全部真机实测）
 
 1. **语料切分：代码块原子化**——fence 代码块 ≤3000 字符永不切（实测 1552 文件 / 13728 代码块，p99 = 3045 覆盖全部教学代码），超限整块跳过不入库；按标点腰斩会让中间片段丢失 ``` 标记，检索命中也答不出来。
-2. **上下文防污染**：同文档同标题链的命中只留最高分一块（防单章节连续切片霸榜）；含代码的块最多进 1 块（防小模型注意力稀释与复读）；系统提示词明确「代码是参考实现，回答以原理讲解为主」。
-3. **检索 query 拼背景**：`query = 问题 + 选中背景前 100 字`——用户常问「还有什么屏障？」这类不含概念词的问题，纯问题检索会全灭；100 字上限防长背景稀释 BM25/向量命中，排序交给 rerank 兜底。
-4. **预算与召回联动**：上下文预算 4000 → 8000，配合精排 TopK = 10（10 块 × ~500 字符）——旧预算会截掉后几块，实测两道检索失利题因此全面翻盘（见「项目亮点」）。
-5. **导入即预向量化**：批量导入完成立即后台补算向量（否则首问触发懒补算，1200 文档要十几分钟、像卡死）；API 429/5xx 指数退避重试，批量场景不再一碰限流整批失败。
-6. **检索参数进设置页**：变体数 / 每路 TopK / 精排 TopK 均可在界面调整，多概念问题加大召回不需要改配置文件。
+2. **上下文防污染**——同文档同标题链的命中只留最高分一块（防单章节连续切片霸榜）；含代码的块最多进 1 块（防小模型注意力稀释与复读）；系统提示词明确「代码是参考实现，回答以原理讲解为主」。
+3. **检索 query 拼背景**——`query = 问题 + 选中背景前 100 字`。用户常问「还有什么屏障？」这类不含概念词的问题，纯问题检索会全灭；100 字上限防长背景稀释 BM25/向量命中，排序交给 rerank 兜底。
+4. **预算与召回联动**——上下文预算 4000 → 8000，配合精排 TopK = 10（10 块 × ~500 字符）；旧预算会截掉后几块，实测两道检索失利题（锁升级 / GC Roots）因此全面翻盘。
+5. **导入即预向量化**——批量导入完成立即后台补算向量（否则首问触发懒补算，1200 文档要十几分钟、像卡死）；API 429/5xx 指数退避重试，批量场景不再一碰限流整批失败。
+6. **检索参数进设置页**——变体数 / 每路 TopK / 精排 TopK 均可在界面调整，多概念问题加大召回不需要改配置文件。
 
 ### 凭据中心与模型热切换
 
@@ -72,170 +70,90 @@
 - **切换厂商 / 模型免重启**（RagApi 单例热重建），换过的模型组合自动记忆、下拉直选；
 - 文档库批量导入 `.txt` / `.md` / `.pdf`：PDF 走 pypdf 后台线程逐页提取 + 质量体检（扫描版 / CID 乱码 / 图片页占比，问题当场提示）。
 
-> 机制级实现细节见正文 4.13 节（核心实现）；按版本的完整调优过程与验证数据见 [docs/11-版本演进与踩坑大事记](docs/11-版本演进与踩坑大事记.md)。
+> 完整调优过程与验证数据：[docs/09-版本演进与踩坑大事记.md](docs/09-版本演进与踩坑大事记.md)（v1.7.0 ~ v1.7.3 条目）
 
 ---
 
-## 一、开源方案调研与选型
+## 功能与快捷键
 
-GitHub 上「选中文本 + 快捷键 + 悬浮窗翻译」方向的成熟项目，调研结果如下：
-
-| 项目 | 技术栈 | 体积 | 关键特性 | 与本需求的距离 |
-|---|---|---|---|---|
-| [Pot / pot-desktop](https://github.com/pot-app/pot-desktop) | Tauri + Rust | 安装包 20MB+，需 WebView2 | 全平台、20+ 翻译接口、OCR、插件系统、多接口对比 | 功能远超需求；改造成本高（Rust）；WebView2 常驻内存 40MB+ |
-| [STranslate](https://github.com/ZGGSONG/STranslate) | C# WPF / .NET | 解压后 60MB+ | Windows 多引擎划词 + OCR、绿色便携、内置离线 OCR | 依赖 .NET 运行时；想改引擎/精简需啃 WPF 代码 |
-| [SnapTranslate](https://github.com/ChenAI-TGF/SnapTranslate) | Python + tkinter | ~10MB | `Ctrl+L` 划词翻译、悬浮窗、生词本 | **最接近**：同样是 RegisterHotKey + 模拟 Ctrl+C；但①直接冲掉用户剪贴板不还原 ②只有 Google 接口（国内实测不通）③无托盘 ④无回退链 |
-| [FlashTrans](https://github.com/SantaChains/FlashTrans) | Python + PySide6 + CTranslate2 | 依赖 + 模型 300MB+ | F1 划词、截图 OCR、离线 MarianMT | 离线是亮点但太重，模型下载 300MB+ |
-| [WinLens](https://github.com/marco-beltrame/WinLens) | C# / WinUI | ~30MB | OCR 原位覆盖翻译、`Ctrl+Alt+T` | 偏 OCR 场景，非划词 |
-| [PopTrans](https://github.com/ifocus9/PopTrans) | Go + Wails + llama.cpp | 模型 1GB+ | 本地 CPU 推理翻译 | 极客向，模型体量不适合"极简" |
-| [Transgemi](https://github.com/hazemAI/Transgemi) | Python + WinOCR + LLM | — | 选区翻译、多 LLM 服务 | OCR 思路好，但依赖 LLM Key + Windows OCR 限制 |
-
-### 为什么不直接改造它们
-
-- **太重**：Pot / STranslate / FlashTrans / PopTrans 要么绑运行时、要么绑 WebView2、要么拖几百 MB 模型，和"极简轻量、启动快、内存低"的目标冲突。
-- **太脆**：SnapTranslate 的技术路线（热键 + 模拟 Ctrl+C）完全正确，但其实现有三个致命伤——不还原剪贴板、Google 接口在国内不可达、没有回退与缓存。改造它的成本 ≈ 重写。
-- **太偏**：WinLens 等走 OCR 路线，解决的是"选不中文字"的问题，不是本需求。
-
-### 借鉴了它们的哪些设计
-
-| 来源 | 借鉴点 |
-|---|---|
-| SnapTranslate | `RegisterHotKey` 注册全局热键 + 模拟 `Ctrl+C` 抓选区的技术路线 |
-| Pot | 多引擎 + 失败自动回退链 + 结果缓存 |
-| STranslate | 绿色便携（config.json 随程序走，可放 U 盘） |
-| FlashTrans / Transgemi | 离线兜底思路（内置词库 / 可选本地大模型） |
-
-结论：**自研极简实现（起步时约 800 行，随功能演化至今核心约 6000 行），把踩过的坑全部填掉，比"改造现成项目"性价比高得多**。
+| 功能 | 入口 | 说明 |
+|---|---|---|
+| 划词翻译 | `Ctrl+Q` 或拖选后点「译」 | 被占用时自动顺延到空闲组合并持久化；结果悬浮窗显示 |
+| 文字动作菜单 | 拖选/双击选词 → 「译 / 便 / 问」三圆按钮，或 `Ctrl+Alt+Q` → `1/2/3` | 数字键直达、免二次抓词；按钮色键透明、缝隙点击穿透 |
+| 截图动作菜单 | `Ctrl+Alt+W` → `1 对照 / 2 OCR` | 先框选看到截图，再选用途 |
+| 截图 OCR 翻译 | 截图动作菜单 → `2`，或托盘菜单 | Windows 内置 OCR，完全离线无 Key；识别 → 清洗 → 统一翻译管线 |
+| 截图对照小窗 | 截图动作菜单 → `1` | 置顶小窗钉在屏幕角落，滚轮缩放、最多 5 窗并存、级联偏移；截图自动进剪贴板（CF_DIB），「存 PNG」保存 1:1 原图 |
+| 置顶便签 | 拖选后点「便」，或 `Ctrl+Alt+Q` → `2` | 单窗口累积、可编辑、全文搜索、大小/位置记忆、超 5 万字自动裁剪 |
+| RAG 快捷问答 | 拖选后点「问」，或 `Ctrl+Alt+Q` → `3` | 选中内容作背景，本地知识库检索 + 大模型流式回答 |
+| 托盘 | 双击 = 设置；右键 = 全部功能入口 | explorer 重启自动重建图标 |
 
 ---
 
-## 二、技术选型
+## 快速开始
 
-### 候选方案对比
+### 下载即用
 
-| 方案 | exe 体积 | 常驻内存 | 冷启动 | 依赖 | 二次开发 |
-|---|---|---|---|---|---|
-| **Python + tkinter + ctypes（本方案）** | **24.2 MB**（含 pypdf；不含 PDF 支持约 12.5 MB） | **~9 MB** | **~1.1 s** | 标准库 + pypdf | 门槛低 |
-| C# WPF / WinForms | 60MB+ | 30~60MB | ~0.5s | .NET 运行时 | 中 |
-| Tauri v2 (Rust) | 3~5MB 安装包 | 40MB+（WebView2） | ~1s | WebView2 | 高（Rust） |
-| Electron | 150MB+ | 150MB+ | 2~4s | 自带 Chromium | 中 |
-| Go + Win32 | 8~12MB | ~10MB | ~0.1s | 无 | 高（需交叉编译 UI） |
+到 [Releases](https://github.com/wysdshg/QuickTool/releases) 下载 `QuickTool.exe` 直接运行——不写注册表、无需安装、目标机不用装 Python（Win10/11 自带 UCRT）。已实测绿色便携：单独复制 exe 到空目录 + 伪造空白 APPDATA 模拟新电脑首次运行，8 个关键自检事件齐全、退出码 0。
+
+### 源码运行
+
+```bat
+git clone https://github.com/wysdshg/QuickTool.git
+cd QuickTool
+run.bat        :: 需要 Python 3.12（系统级，带 tkinter）
+```
+
+### 截图 OCR 语言包
+
+OCR 用系统自带的 Windows.Media.Ocr，语言包取决于系统安装情况：设置 → 时间和语言 → 语言 → 选项 → 下载「文本识别」语言功能。未安装时划词翻译不受影响，截图翻译会给出引导。
+
+### 配置翻译与模型凭据
+
+翻译引擎：MyMemory（默认，零配置）/ 离线词库（断网兜底）/ 大模型（质量最优）。大模型走「凭据中心」：
+
+```jsonc
+"providers": {
+  "siliconflow": { "base_url": "https://api.siliconflow.cn/v1", "api_key": "sk-…", "chat_model": "Qwen/Qwen3-8B" },
+  "modelscope":  { "base_url": "https://api-inference.modelscope.cn/v1", "api_key": "…", "chat_model": "Qwen/Qwen3.8-Flash-Next" },
+  "zhipu":       { "base_url": "https://open.bigmodel.cn/api/paas/v4", "chat_model": "glm-4.5-flash" },
+  "deepseek":    { "base_url": "https://api.deepseek.com/v1", "chat_model": "deepseek-chat" },
+  "custom":      { "base_url": "http://localhost:11434/v1" }   // 本地 Ollama 也走这里
+}
+```
+
+推荐组合：日常查词 MyMemory（零成本）→ 质量场景智谱 `glm-4-flash`（完全免费）→ 断网/隐私切本地 Ollama 或离线词库。完整引擎对比与接入说明见 [docs/03-翻译接口与凭据.md](docs/03-翻译接口与凭据.md)。
+
+---
+
+## 架构与技术选型
 
 ### 为什么是 Python + tkinter + ctypes
 
-1. **零第三方依赖**（翻译/抓词/热键/托盘/悬浮窗全链路）：GUI 用内置 tkinter；热键/剪贴板/托盘全部用 `ctypes` 直调 Win32 API；网络用内置 `urllib`；知识库用内置 `sqlite3`。
-2. **易改**：Python 读起来像伪代码，改引擎、加功能都很快，符合"轻量工具持续演化"的需求。
-3. **不碰坑**：开发链简单（一台有 Python 的 Windows 就能打包），没有 Rust/WebView2/.NET 的工具链负担。
+1. **零第三方依赖**：GUI 用内置 tkinter；热键/剪贴板/托盘全部 `ctypes` 直调 Win32 API；网络用内置 urllib；知识库用内置 sqlite3。
+2. **易改**：Python 读起来像伪代码，符合「轻量工具持续演化」的定位（起步约 800 行，现核心约 6000 行）。
+3. **不碰坑**：一台有 Python 的 Windows 就能开发打包，没有 Rust/WebView2/.NET 工具链负担。
 
-### 唯一的第三方依赖例外：pypdf
+| 方案 | exe 体积 | 常驻内存 | 冷启动 | 依赖 |
+|---|---|---|---|---|
+| **Python + tkinter + ctypes（本方案）** | **24.2 MB** | **~9 MB** | **~1.1 s** | 标准库 + pypdf |
+| C# WPF / .NET | 60MB+ | 30~60MB | ~0.5s | .NET 运行时 |
+| Tauri v2 (Rust) | 3~5MB 安装包 | 40MB+（WebView2） | ~1s | WebView2 |
+| Electron | 150MB+ | 150MB+ | 2~4s | 自带 Chromium |
 
-PDF 文档库导入（v1.7）引入 **pypdf**——纯 Python、零原生扩展，是中文 PDF 的 CID 字体必须解 ToUnicode 才能还原中文的必然选择（实测零依赖手写解流对中文 100% 乱码）。它只参与 PDF 导入链路，翻译/问答/划词等主功能不依赖它，打包经 spec excludes 瘦身后 exe 12.5MB → 24MB（详见 4.13）。
+> 起步前调研过 Pot / STranslate / SnapTranslate / FlashTrans 等 7 个同类项目：成熟软件太重（WebView2 40MB+ / .NET 60MB+），同技术路线的 Python 项目有三处致命伤（不还原剪贴板 / 接口国内不可达 / 无回退链），改造量 ≈ 重写——完整调研表见 [docs/01-开源方案调研.md](docs/01-开源方案调研.md)。
 
-### 刻意砍掉的东西
+### 刻意砍掉的依赖
 
 | 常见做法 | 为什么不用 |
 |---|---|
-| `keyboard` / `pynput` 监听热键 | 它们装的是**全局键盘钩子**，属于"键盘记录器"行为，极易被杀软/EDR 拦截，部分场景还要管理员权限。`RegisterHotKey` 是系统级机制，无钩子、无权限要求 |
-| `pywin32` 操作 Win32 | 打包后体积 +30MB 起；`ctypes` 声明几个结构体就够 |
-| `requests` 发请求 | 只是 GET/POST + JSON，`urllib` 完全够用，少一个依赖 |
-| `pyperclip` | 剪贴板需要"全格式快照/还原"（不只文本），`pyperclip` 做不到，直接用 Win32 剪贴板 API |
-| 系统托盘库 `pystray` | 自己用 `Shell_NotifyIconW` 实现，约 60 行，省掉 Pillow 依赖 |
+| `keyboard` / `pynput` 监听热键 | 装的是**全局键盘钩子**（键盘记录器行为），极易被杀软拦截，部分场景要管理员权限。`RegisterHotKey` 是系统级机制，无钩子、无权限要求 |
+| `pywin32` 操作 Win32 | 打包体积 +30MB 起；ctypes 声明几个结构体就够 |
+| `requests` 发请求 | 只是 GET/POST + JSON，urllib 够用，少一个依赖 |
+| `pyperclip` | 做不到「全格式快照/还原」（不只文本），直接用 Win32 剪贴板 API |
+| `pystray` 托盘库 | 自己用 `Shell_NotifyIconW` 实现约 60 行，省掉 Pillow 依赖 |
+| PIL 处理截图 | Tk 原生认 PNG——用标准库 zlib 手写 PNG 编码（见核心实现精选） |
 
----
-
-## 三、项目结构
-
-```
-QuickTool/
-├── main.py                  # 入口：五线程模型、热键路由、事件分发、RAG worker
-├── QuickTool.spec               # PyInstaller 打包配置（含 pypdf 瘦身 excludes）
-├── build.bat / run.bat      # 一键打包 / 源码运行
-├── requirements.txt         # 运行时依赖：无（打包机另需 pyinstaller + pypdf）
-├── RELEASE_NOTES_v1.7.*.md  # 各版本发布说明（同步到 GitHub Release）
-├── assets/icon.ico          # 程序图标
-├── data/
-│   ├── mini_dict.json       # 内置离线词库（306 词，断网兜底）
-│   └── ecdict.txt           # 可选：完整离线词典（放这里自动加载）
-├── qt/
-│   ├── winapi.py            # 纯 ctypes：全局热键 / 剪贴板 / 光标 / 托盘 / 抓屏 / 鼠标钩子
-│   ├── capture.py           # 选中文本提取 + PDF 断词清洗
-│   ├── engines.py           # 翻译引擎（MyMemory/Google/LLM/离线）
-│   ├── translator.py        # 引擎调度：LRU 缓存 + 失败回退链
-│   ├── config.py            # 配置读写 + 凭据中心（五厂商/DPAPI 加密）+ 开机自启
-│   ├── logging_setup.py     # 三层崩溃取证 + 心跳 + 轮转日志
-│   ├── ocr.py               # Windows.Media.Ocr 桥（内嵌 PowerShell）
-│   ├── ui.py                # 悬浮窗 / 设置 / 便签 / 对照窗 / 选区遮罩 / 迷你按钮
-│   └── ragui.py             # RAG 问答窗 + 文档库管理窗
-├── rag/                     # RAG 引擎（v1.7，纯标准库 + 云端 embedding/rerank）
-│   ├── engine.py            # 五阶段总装：Fusion → 双路召回 → RRF → Rerank → 生成
-│   ├── api.py               # OpenAI 兼容 API 封装（chat/embed/rerank，SSE 流式）
-│   ├── store.py             # 本地知识库（sqlite FTS5 trigram）
-│   ├── splitter.py          # fence-aware 切分（代码块原子化）
-│   ├── bm25.py / vectors.py # BM25 检索 / 向量化与缺失补算
-│   ├── fusion.py            # 查询变体生成 + RRF 融合
-│   └── pdftext.py           # PDF 逐页提取 + 质量体检
-└── tests/
-    ├── smoke.py             # 冒烟测试（272 项断言）
-    ├── e2e.py               # 端到端：真实按键触发全链路（源码 + 打包双跑）
-    ├── perf.py              # 体测：体积 / 启动 / 内存 / 热键退出
-    └── …                    # 其余专项/诊断脚本见 docs/09-自动化测试.md（本地开发用，不入库）
-```
-
----
-
-## 四、核心实现
-
-### 4.1 全局热键：`RegisterHotKey`
-
-```python
-# qt/winapi.py
-user32.RegisterHotKey(hwnd, hotkey_id, mods, vk)   # mods = MOD_CONTROL|MOD_ALT|MOD_NOREPEAT
-
-# main.py 的消息路由（Win32 线程）
-def _on_message(self, hwnd, msg, wparam, lparam):
-    if msg == wa.WM_HOTKEY:
-        if wparam == HK_TRANSLATE:
-            self._do_translate()          # 在独立线程执行，不阻塞界面
-        ...
-```
-
-用独立线程 + `GetMessageW` 消息循环监听，完全不碰键盘钩子。这个实现里有三个真实踩过的坑：
-
-1. **修饰键残留**（最容易翻车）：用户按的是 `Ctrl+Alt+T`，此刻 Ctrl/Alt 都处于按下状态。如果不先把它们抬起就发 `Ctrl+C`，系统会收到 `Ctrl+Alt+C`，复制根本不触发。所以抓词前必须：
-   ```python
-   def release_modifiers():
-       for vk in (VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN):
-           _send_input([_key(vk, up=True)])     # 先全部抬起
-   ```
-2. **热键被占用（错误码 1409）**：实测这台机器上 `Ctrl+Alt+T`、`Ctrl+Alt+S` 已经被其他软件占用（输入法/显卡面板/网盘/IDE 都会抢 `Ctrl+Alt+*`）。程序启动时若发现占用，**自动顺延**到下一个空闲组合（`Ctrl+Alt+F1` → `Ctrl+Alt+D` → …）并弹窗告知，而不是让用户面对"快捷键没反应"。
-3. **`MOD_NOREPEAT`**：按住热键不放不会连续触发。
-
-### 4.2 选中文本提取
-
-Windows 没有"读取任意窗口当前选区"的通用 API，主流三条路线：
-
-| 路线 | 原理 | 兼容性 | 代价 |
-|---|---|---|---|
-| **A. 模拟 Ctrl+C + 读剪贴板（本方案）** | `SendInput` 发 Ctrl+C → 监听剪贴板变化 → 读取 | 浏览器/PDF/Word/记事本/IDE/远程桌面都行 | 会短暂占用剪贴板，必须快照还原 |
-| B. UI Automation `TextPattern` | 通过 UIA 接口直接读选中文本 | 不污染剪贴板，但自绘 UI/PDF/游戏不支持 | 依赖 comtypes/pywin32 |
-| C. `WM_GETTEXT` / `SendMessage` | 只覆盖标准 Edit/RichEdit 控件 | 很窄 | — |
-
-选 A，并做了三重保护：
-
-```python
-# qt/capture.py
-def get_selected_text(timeout=0.45, retries=2):
-    snapshot = wa.clipboard_snapshot()      # ① 全格式快照（含图片/文件）
-    prev_seq = wa.get_clipboard_sequence()  # ② 用序列号判断复制是否完成，不盲等
-    ...send Ctrl+C，轮询序列号...
-    wa.clipboard_restore(snapshot)          # ③ 无论成败都还原，用户剪贴板无感
-```
-
-**组合键分步注入（v1.7.2）**：`send_ctrl_c` 曾把 Ctrl↓/C↓/C↑/Ctrl↑ 塞进同一个 SendInput 批次零间隔发送——Word 的异步输入管线会丢修饰键、把组合键当裸字符提交，表现为「拖选后选区被清除、原地多一个 c」。已改为分步注入并留键间隔（Ctrl↓ → 25ms → C↓↑ → 20ms → Ctrl↑），真机验证 Word 抓词正常（详见十一节 v1.7.2 条目）。
-
-**PDF 断词清洗**：从论文/PDF 复制出来的文本常带换行断词（`the perfor-\nmance`），直接丢给翻译引擎会把词拆成两半。`normalize_text()` 会做断词合并、空白折叠、段落边界保留。
-
-### 4.3 线程模型（v1.7 起为五个线程）
+### 五线程模型
 
 ```
 ┌─ 主线程（Tk 事件循环）──────────────┐   ┌─ Win32 线程（独立消息循环）────┐
@@ -247,378 +165,85 @@ def get_selected_text(timeout=0.45, retries=2):
 └─────────────────────────┘  └──────────────────────┘  └────────────────────┘
 ```
 
-Tk 不是线程安全的，所有线程**只通过 `queue.Queue` 单向通信**，绝不跨线程操作控件。抓词/翻译/OCR/RAG 各用独立 worker，互不排队拖拽。
-
-### 4.4 悬浮窗
-
-- 无边框、置顶、半透明（`overrideredirect` + `-topmost` + `-alpha`）
-- 从任务栏/Alt-Tab 隐藏（`WS_EX_TOOLWINDOW`）
-- 出现在光标右下角，自动夹在工作区内（`SPI_GETWORKAREA`，避开任务栏）
-- `Esc` / 点击别处 / 再按热键 / 自动隐藏（可配置）四种方式关闭
-- 深色/浅色两种主题，字体大小、宽度、不透明度可调
-- 翻译过程中先显示"翻译中…"，结果返回后原地刷新，不闪烁
-
-### 4.5 迷你翻译按钮（拖选即出）
-
-不想记快捷键？**用鼠标拖选一段英文，或双击选中一个词，松手后光标旁自动浮现「译」「便」「问」三个圆形迷你按钮（并排 82px，色键透明、缝隙点击穿透）**：点「译」即翻译，点「便」直接把已抓好的文字钉进便签（省一次剪贴板往返），2.2 秒不动自动消失（鼠标移上去即暂停计时）。按钮做到尽量小、半透明、不挡视野。
-
-实现分三层：
-
-1. **低层鼠标钩子 `WH_MOUSE_LL`**（`qt/winapi.py` 的 `MouseDragWatcher`）：监听 `WM_LBUTTONDOWN` 记录按下坐标、`WM_LBUTTONUP` 时若位移 ≥ 6px 判定为"拖选"；`WM_LBUTTONDBLCLK` 判定为"双击选词"（英文阅读最常见的选词方式），双击后的松开也会触发。普通单击不触发。钩子装在 Win32 消息循环线程上，**回调里只发一条自定义消息，绝不直接干活**——抓词（模拟 Ctrl+C）放到消息循环里做，避免在系统钩子回调内重入注入与剪贴板。
-2. **抓词与过滤**：拖选结束后在消息循环里调 `get_selected_text()`，经 `looks_translatable` + 长度上限（默认 200 字符）过滤，防止误抓整页。
-3. **按钮 UI**（`qt/ui.py` 的 `MiniButton`）：圆形、置顶、半透明、无边框；hover 高亮；点击后把文本交给 Win32 线程翻译（不阻塞界面）；按钮矩形会同步给鼠标钩子作为 `ignore_rect`——**点自己按钮不会又触发一次抓词**。
-
-两个防打扰细节：悬浮窗打开期间不弹按钮；两次触发间隔 ≥ 1s（防连发）。
-
-### 4.6 系统托盘
-
-`Shell_NotifyIconW` 自实现（约 60 行）：右键菜单 = 设置 / 截图翻译 / 退出；双击打开设置。托盘添加失败时静默降级，不影响热键功能。
-
-> ⚠️ 踩坑记录：托盘回调消息（`uCallbackMessage`）的 `lParam` 是 32 位值，**低 16 位才是鼠标事件**（`WM_RBUTTONUP` 等），高 16 位是图标 ID。早期版本直接拿整个 `lParam` 与 `WM_RBUTTONUP` 比较，永远不相等 → 右键菜单能弹出但点任何项都没反应。修复：`ev = lparam & 0xFFFF`。
-
-### 4.7 截图翻译（OCR，v1.2 新增）
-
-**解决"有些地方选不中文字"的场景**（受保护 PDF、软件界面、图片里的英文）：按截图热键（默认 `Ctrl+Alt+A`，被占用自动顺延）或点托盘菜单"截图翻译" → 全屏半透明遮罩上拖拽框选 → 自动 OCR 识别 → 走统一翻译管线弹译文悬浮窗。Esc / 右键取消。
-
-技术方案（借鉴 STranslate 的交互，但 OCR 后端完全不同）：
-
-| 环节 | 实现 | 为什么 |
-|---|---|---|
-| 框选遮罩 | `qt/ui.py` 的 `RegionSelector`（Tk 全屏 `overrideredirect` + 半透明 + 橡皮筋矩形） | 纯 Tk，零依赖；注意不能对隐藏 root 调 `transient()`（同 Settings 的 withdrawn 坑） |
-| 抓屏 | `qt/winapi.py` 的 `grab_screen_bmp`（GDI `BitBlt + CAPTUREBLT`，纯 ctypes，自拼 32bpp BMP 文件头） | 本进程 DPI 感知，坐标即物理像素，**避开子进程 DPI 虚拟化坐标错位的坑**（实测踩过：DPI 不感知的进程抓 125% 缩放屏会抓偏） |
-| OCR | `qt/ocr.py`：内嵌 PowerShell 脚本调用 **Windows 10/11 内置的 Windows.Media.Ocr**（WinRT） | 完全离线、无 API Key、无第三方依赖，契合零依赖铁律；PaddleOCR/Tesseract 都要 pip 依赖或外部二进制，打包体积和杀软风险都不可接受。PS 5.1 通过反射拿 `GetAwaiter` 兜 WinRT 异步（PS7 反而不支持 WinRT 投射） |
-| 语言包 | `AvailableRecognizerLanguages` 探测，`auto` = 优先 `en-US`（主场景英→中），可在设置里指定 | OCR 语言取决于系统安装的语言（设置 → 时间和语言 → 语言 → 选项 → 下载"文本识别"）；无语言包时给出明确引导提示 |
-
-⚠️ 已知限制：Windows OCR 对"屏幕清晰文字"效果很好，但手写体/艺术字/低分辨率截图效果一般；首次使用若提示"没有可用的 OCR 语言包"，按提示安装语言功能即可。OCR 结果会先过 `normalize_text` 清洗（合并断词换行）再翻译。
-
-> ⚠️ 踩坑记录（热键顺延，v1.2 修复）：`HOTKEY_CANDIDATES` 曾用字符串做键（`"settings"`），而注册逻辑用 `hid`（int）查询 → `.get()` 永远查不到，**整条顺延链是死代码**——表现为每次启动都弹同一个"Ctrl+Alt+S 注册失败"。修复：改用 `HK_*` 整数做键 + 顺延结果全部持久化 + 程序内部组合查重（同一组合不能绑两个功能）+ 非核心键失败降级为提示（划词翻译键失败才算致命）。
-
-> ⚠️ 踩坑记录（框选与划词钩子冲突，v1.2 修复）：迷你按钮的 `WH_MOUSE_LL` 钩子把**截图框选的拖动**也当成"划词拖选"，松开鼠标就触发一次全局 Ctrl+C 抓词。修复：`_handle_drag_end` 顶部加 `ocr_selector` 守卫——遮罩开着时直接忽略拖动结束事件。已由 `tests/ocr_full_app.py` 真 App 驱动验证（框选全程无迷你按钮弹出）。
-
-### 4.8 截图对照小窗（v1.5 新增）
-
-**解决"长网页要不断回头对照"的场景**：按 `Ctrl+Prtsc`（被占用自动顺延到 `Ctrl+Alt+W` → `Ctrl+Alt+D` → …）或点托盘菜单"截图对照" → 框选屏幕区域 → 该区域以**置顶小窗**固定显示，滚动网页时不用来回切窗口。Esc / 右键 / 右上角 ✕ 关闭，**用完即关、不创建窗口时零内存开销**。
-
-**多窗口并存（v1.5.1）**：可同时打开最多 **5 个** 对照小窗，各自独立关闭。层级策略为「**点谁谁在前**」——点击任意窗口即 `lift + focus` 置前（无边框窗点击不自动抢焦点，需显式处理）。新窗口初始位置相对鼠标**级联偏移**（28px × 序号，向右下错开），避免新窗弹出直接盖住旧窗；工具条标题带编号（`对照 1`、`对照 2`…）。超过 5 个时提示"请先关闭一个"。
-
-**保存 + 剪贴板（v1.5.2）**：与 Win+Shift+S 同一逻辑——**框选完成截图自动进剪贴板**（CF_DIB 位图，任何应用直接 Ctrl+V 粘贴）；文件保存则**主动触发**（工具条「存 PNG」按钮 / 快捷键 Ctrl+S），存 1:1 原始分辨率 PNG 到 `%USERPROFILE%\Pictures\QuickTool\`，命名 `QuickTool_时间戳.png`，保存成功 toast 提示路径。剪贴板"总是放"（零副作用）、文件"按需存"（不堆积）——这就是"怎么确定是否保存"的答案：**剪贴板无需确认，文件需明确意图**。
-
-| 环节 | 实现 | 为什么 |
-|---|---|---|
-| 框选 | 复用 `RegionSelector`（加 `title` 参数区分文案） | 与截图翻译同一交互，零重复代码 |
-| 抓屏 | 复用 `grab_screen_bmp`（GDI `BitBlt + CAPTUREBLT`） | 毫秒级、物理像素坐标 |
-| 显示 | `qt/ui.py` 新增 `PinWindow`：置顶无边框 Toplevel + 工具条 + Canvas | 整窗可拖动；滚轮缩放 1x~1/8x（只缩小不放大，对照真实尺寸最实用）；顶部工具条显示当前缩放百分比 |
-| 多窗口 | `app.pin_wins` 列表管理；`PinWindow` 带 `index` 序号 + `CASCADE=28` 级联偏移；点击 `lift()+focus_force()` 置前；`close()` 从列表移除自己 | 并存不互相顶掉；「点谁谁在前」层级；上限 `PIN_MAX=5` 防失控 |
-| 剪贴板 | `set_clipboard_image`：BMP 去 14B 文件头 → **CF_DIB**（HGLOBAL，走 `_CLIP_LOCK` 串行）→ `SetClipboardData` | 与 Win+Shift+S 同格式，微信/QQ/Word 直接粘贴；CF_DIB 是内存块，快照/还原兼容（不在非 HGLOBAL 黑名单） |
-| 保存 | `_save_png`：复用 `_bmp_to_png` → 写 `Pictures\QuickTool\`；工具条按钮 + Ctrl+S 触发 | 存 1:1 原图；主动按键 = 明确保存意图；toast 非阻塞提示（不卡主线程） |
-| BMP→图像 | **标准库 zlib 手写 PNG 编码**（8bit RGB，IDAT 压缩）→ base64 → `tk.PhotoImage` | `tk.PhotoImage` 不认 BMP（只认 GIF/PPM/PNG），PIL 又违反零依赖铁律；PNG 压缩后 base64 体积远小于裸 BMP，且 Tk 8.6 原生支持 |
-
-> ⚠️ 关键设计：`PinWindow` 打开期间 `_handle_drag_end` 也会忽略拖选（同 `ocr_selector` 守卫）——不然在对照窗里拖一下就会弹迷你按钮。版本号顺延至 1.5.0（单窗）、1.5.1（多窗）、1.5.2（保存+剪贴板）。
-
-### 4.9 拖选卡鼠标的修复（v1.3）
-
-**症状**：程序运行时按住左键拖一下、没选中任何文字，鼠标会卡一下（约半秒）。
-
-**根因**：`WH_MOUSE_LL` 低层鼠标钩子的回调，靠**安装它的那个线程的消息泵**驱动，而抓词原本就跑在同一个线程（Win32 消息循环线程）里。抓词流程是"模拟 Ctrl+C → 轮询等剪贴板序列号变化"：
-
-- 选中了内容 → 剪贴板很快变化，立即返回，无感；
-- **没选中内容 → 等满 `timeout × retries`（0.45s × 2）**，这期间钩子线程取不走钩子通知，系统派发鼠标消息被拖住 → 卡。
-
-修复前的实测（`tests/drag_lag.py`，统计鼠标消息到达间隔）：基线 22ms，**拖选后尖峰 467ms**；修复后同法复测：**拖选后 23ms、>150ms 尖峰 0 个**，`VERDICT=SMOOTH`。
-
-**修复**：把重活全部移出钩子线程，四个线程各司其职——
-
-| 线程 | 职责 | 允许阻塞？ |
-|---|---|---|
-| 主线程 | tkinter 界面 | 否 |
-| `Win32Thread` | 热键 / 托盘 / 鼠标钩子，**只做轻量判断 + 投递消息** | **绝对不行** |
-| `CaptureWorker` | 抓词（Ctrl+C + 等剪贴板） | 可以（最坏 ~0.7s） |
-| `JobWorker` | 联网翻译 / 截图 OCR | 可以（秒级） |
-| `RagWorker` | RAG 检索 + 流式生成（v1.7 起，独立于 JobWorker——一段 10s 的回答不能堵住翻译/OCR 排队） | 可以（秒~十秒级） |
-
-顺带治好了同源的两个隐患：热键翻译的网络往返（1~3s）、截图 OCR 的 PowerShell 子进程（1~3s）原本也堵在钩子线程上。另外抓词首轮改为 0.25s 快速失败（慢程序由第二轮兜底），让"根本没选中内容"的场景更早收手。
-
-验证（`tests/lag_workers.py`：把抓词替换成 `sleep(0.8s)` 制造最坏情况，再用跨线程 `SendMessage` 测钩子线程的消息泵往返延迟，只针对本进程实例、不受其他进程干扰）：
-
-| 模式 | 抓词所在线程 | 抓词期间钩子线程往返延迟 |
-|---|---|---|
-| 修复前（`--baseline` 对照） | `Win32Thread` | **800 ms** |
-| 修复后 | `CaptureWorker` | **0 ms** |
-
-### 4.10 换电脑 / 绿色分发
-
-**结论：直接复制 `dist\QuickTool.exe` 到其他电脑就能用。** 它是 PyInstaller `--onefile --windowed` 单文件产物：不写注册表、不需要安装、不需要目标机装 Python 或运行库（Win10/11 自带 UCRT）。
-
-实测（`tests/portable_check.py`）：把 exe 单独复制到空目录（无 `qt/`、无 `data/`），并伪造一个空白 `APPDATA` 模拟"新电脑首次运行"，跑完整自检流程 —— **退出码 0、8 个关键事件齐全、配置正确落到 `%APPDATA%\QuickTool\config.json`**，`PORTABLE PASS`。
-
-| 依赖 | 是否随 exe 走 | 说明 |
-|---|---|---|
-| Python 解释器 + 标准库 + tkinter | ✅ 打包在 exe 内 | 目标机无需装 Python |
-| 离线词库 `data/mini_dict.json` | ✅ `datas` 打包 | 经 `sys._MEIPASS` 解包路径读取 |
-| 托盘图标 | ✅ 取 exe 自带资源 ID=1 | 不依赖外部 png/ico |
-| OCR 引擎（Windows.Media.Ocr） | ✅ 系统自带（Win10/11） | 但**识别语言包取决于系统**，见第 3 点 |
-| `config.json` | ❌ 运行时生成 | 见第 2 点 |
-
-换机后需要注意的 5 件事：
-
-1. **热键可能被自动顺延**（这是特性不是 bug）。新电脑上如果 `Ctrl+Q` 被微信/输入法/浏览器扩展占用，程序会自动换用候选组合并弹一条非阻塞提示，同时把结果写进配置（下次启动不再重新报）。实测在本机已有实例占用的环境下，四个默认组合全部命中 1409，程序自动落位为 `Ctrl+Alt+F1` / `Ctrl+Alt+,` / `Ctrl+Alt+Shift+Q` / `Ctrl+Alt+P`，功能全部可用；托盘菜单里也能手动改。**不要同时开两个实例**——它们会互相抢热键（本机实测 2 个实例并存时后启动的那个四个键全被顺延）。
-2. **设置是否随身带**：程序同目录有 `config.json` 就走绿色便携模式（放 U 盘最合适）；没有则读写 `%APPDATA%\QuickTool\config.json`。想把引擎/API Key/热键一起搬到新电脑，把 `config.json` 和 exe 放同一个文件夹复制过去即可。
-3. **截图翻译需要系统 OCR 语言包**：设置 → 时间和语言 → 语言 → 首选语言 → 选项 → 下载"文本识别"。新电脑没装 `en-US` 时，截图翻译会给出安装引导，**划词翻译完全不受影响**。
-4. **联网与 Key**：默认 MyMemory 需联网（免 Key）；离线词库断网可用（单词级）；大模型翻译引擎需要在新电脑上能访问对应 API 且配置里有 Key。
-5. **首次运行的拦截提示**：exe 未签名，新电脑上可能遇到 SmartScreen（点"更多信息 → 仍要运行"）；个别杀软会误报 PyInstaller 单文件产物，加白名单即可。另外开机自启是写 `HKCU\...\Run` 里的**绝对路径**，换了目录或电脑后需要在设置里重新勾选一次。
-
-### 4.11 托盘静默消失的排查与日志系统（v1.4）
-
-**用户报告的现象**：程序跑一段时间后（电脑一直开着、人离开一会儿再回来）托盘图标没了、热键也失效，只能重新打开。
-
-**排查结论：不是 Windows 安全中心。** 按 `tests/_diag_events_tmp.py` 的取证流程翻 Windows 事件日志（Application Error 1000 / WER 1001）发现：当日 3 次 `0xc0000374`（**堆损坏**）崩溃，出错模块 `ntdll.dll`，Defender Operational 日志零记录（排除杀软误杀），explorer.exe 无崩溃（排除资源管理器重启导致托盘图标消失）。堆损坏发生在 C 层，Python 异常捕获不到，进程直接死亡——所以表现为"安静地没了"。
-
-**为什么定位不了具体哪一行**：堆损坏是"先在某处越界写坏堆元数据，之后任意一次堆操作才爆出来"，崩溃点（ntdll 的 RtlFreeHeap/RtlAllocateHeap）通常离真正的元凶很远。静态审查排除了句柄截断（64 位句柄 restype 全部正确声明）、托盘/菜单/GDI 句柄生命周期、跨线程 Tk 调用（四个线程全部只经队列通信）等问题，剩余最可疑的是剪贴板无界读取。所以 v1.4 做了两层动作：
-
-**1) C 边界加固（`qt/winapi.py`）**：
-- `get_clipboard_text`：原来 `string_at(ptr)` / `wstring_at(ptr)` 读到 NUL 为止，对**没有终止符的畸形剪贴板数据会越界读**——现改为按 `GlobalSize` 有界读取、截齐偶数字节、解到第一个 NUL 为止；
-- `clipboard_snapshot` / `clipboard_restore`：只快照确认是 HGLOBAL 的格式（`GlobalSize` 返回 0 的非内存块格式如 CF_BITMAP 直接跳过），单格式上限 8MB；
-- `set_clipboard_text`：`GlobalAlloc`/`GlobalLock` 失败时不再裸 memmove，失败路径释放句柄；
-- `message_loop`：`GetMessageW == -1` 不再静默跳过（旧写法会导致消息循环线程静默死亡），连续出错记录并退出；
-- 新增 `TaskbarCreated` 监听：explorer 重启会收走所有托盘图标，现在收到广播会自动重新挂图标。
-
-**2) 运行日志系统（`qt/logging_setup.py`，用户要求的取证基建）**：
-- 日志位置跟随配置的便携逻辑：`<exe 同目录>\logs\QuickTool.log`（便携）或 `%APPDATA%\QuickTool\logs\`（安装模式），2MB 轮转保留 3 份；
-- **三层崩溃取证**：`faulthandler`（C 层访问违例时 dump 各线程 Python 栈到 `crash.log`）+ 三处异常钩子（`sys.excepthook` / `threading.excepthook` / `Tk.report_callback_exception`——windowed exe 没有 stderr，Tk 回调异常默认是黑洞，现在全部落盘）+ 关键事件埋点（启动/热键注册/托盘/抓词/翻译/OCR/退出，含线程名）；
-- **5 分钟心跳**：`HEARTBEAT threads=[...]`，区分"进程活着但空闲"与"假死"；
-- 日志系统自身任何异常都被吞掉，绝不影响主程序。
-- ⚠️ 白盒测试抓到一个自伤 bug：`sys.excepthook` 曾误写成单参签名，任何未捕获异常都会先触发 "Error in sys.excepthook"（钩子自己先炸）——已修为标准三参 `(type, value, tb)` 并加防回归断言（`tests/taskbar_rebuild_check.py` 触发真实未捕获异常验证）。
-
-**验证**：smoke 40/40（新增日志 8 项断言，含 sys.excepthook 三参签名防回归）、e2e 10/10×2（源码 + 打包版）、harden_check 14/14（v1.4.1 起含并发剪贴板压力场景）、taskbar_rebuild_check 5/5、lag_workers 白盒回归 PASS。日志实测样例见下——崩溃后再看最后一条就知道死前在做什么：
-
-```text
-2026-08-31 19:53:15.379 [INFO] [MainThread] BOOT QuickTool v1.4 pid=36060
-2026-08-31 19:53:15.424 [INFO] [Win32Thread] HWND-CREATED hwnd=3476256
-2026-08-31 19:53:15.434 [INFO] [Win32Thread] TRAY-ADD ok=True
-2026-08-31 19:53:15.434 [INFO] [Win32Thread] HOTKEY-OK hid=1 combo=Ctrl+Q
-2026-08-31 19:53:17.536 [INFO] [Win32Thread] CAPTURE-START kind=hotkey
-2026-08-31 19:53:18.514 [INFO] [JobWorker] TRANSLATE-END engine=MyMemory ok=True
-2026-08-31 19:53:22.244 [INFO] [MainThread] QUIT-START
-```
-
-**如果以后再出现**：直接把 `logs\QuickTool.log`（和 `logs\crash.log`）发给开发者即可——即使还是堆损坏崩溃，faulthandler 的线程栈 + 最后一条事件能大幅缩小嫌疑范围。
-
-**如果以后再出现**：取 `logs\QuickTool.log` 最后一条事件 + `crash.log` 的 faulthandler 栈即可定位（当前版本已确认崩溃点不会再是剪贴板并发）。
-
-### 4.12 置顶便签（v1.6 新增）
-
-**解决"读长文被术语/长段落打断，回来找不到读到哪"的场景**：选中那段文字按 `Ctrl+Alt+N`（被占用自动顺延到 `Ctrl+Alt+M` → …）、点托盘菜单"置顶便签"，或**鼠标拖选后点迷你按钮的「便」**（v1.6.3）→ 内容被**搬运**到屏幕角落的置顶便签窗（默认 520×420），原文位置不受任何影响。
-
-> 💡 三种入口终点完全一致，只是取词方式不同：热键与托盘走「模拟 Ctrl+C 抓词」，**迷你按钮「便」直接用拖选时已经抓好的文字**，少一次剪贴板往返，也更快。
-
-**大小与位置记忆（v1.6.2）**：无边框窗没有系统缩放边框，右下角放了 **`◢` 拖拽手柄**自由调整大小（最小 320×240 夹紧）；关窗时把大小和位置写进配置（`note_w/h/x/y`），下次打开**原样恢复**——便签钉在哪、多大，都是你上次留下的样子。防「打开即关」越关越小：`winfo` 读数未布局完时是 1，低于最小值就回退到逻辑尺寸。
-
-**和截图对照（4.8）的本质区别**：截图对照解决"**看**别处的东西"（一张图一窗口），便签解决"**读过的文字暂存**"（多段累积到同一窗口）。文本可以合并，所以单窗口累积就是正确形态——滚动顺序本身就是你的跳转历史。
-
-| 能力 | 实现 | 设计理由 |
-|---|---|---|
-| 单窗口累积 | `app.note_win` 单例；已有便签就 `append` 追加一段，没有才新建 | 多开挡视线；段头 `── 序号 · 时间 · 来源窗口标题 ──` 灰色小字记录出处 |
-| 段定位 | 每段正文打 `seg{n}` tag，光标用 `compare()` 判断所在段 | tag 定位不受行号漂移/文字增删影响 |
-| 搜索 | 顶部「搜索」按钮弹出输入框，实时在便签**全文**里高亮全部命中并跳到当前匹配（Enter / Shift+Enter 前后移动，Esc 关闭） | 便签是「把散落片段攒到一起长期看」的工具，内部搜索比「跳回原应用搜」更直觉也更常用 |
-| 可编辑 | `ScrolledText`（tkinter 自带，零依赖） | 查完术语把解释贴回片段下面，自动形成带上下文的学习笔记 |
-| 裁剪 | 超 50000 字从最老段整段连头删除（`_first` 推进） | 长时间使用不爆内存；最老的最可能已经不需要 |
-| 保存/复制 | 存 txt 到 `%USERPROFILE%\Documents\QuickTool\`（Ctrl+S 同效）；「复制」全量进剪贴板 | 文本文件不进图片库，与截图分目录 |
-| 不做翻译过滤 | 抓词不走 `looks_translatable` | 代码、术语、公式也该能钉——这是与划词翻译的关键差异 |
-
-> ⚠️ 关键实现细节：
-> - **拖动只绑工具条 Frame**：Text 控件事件会沿 bindtags（widget→class→toplevel→all）传播到 Toplevel——拖动若绑在 Toplevel 上，点击正文字会触发拖动、选不中字。父 Frame 不在 Text 的 bindtags 链上，天然免疫。
-> - **来源窗口在热键触发瞬间记录**：`_on_message` 跑在 Win32 线程，此刻前台还是用户正在读的窗口；抓词的模拟 Ctrl+C 之后前台可能已变，必须**立刻**记 `GetForegroundWindow()` + 标题。
-> - **搜索条内联在顶部**：「搜索」按钮切换一个 `pack`/`pack_forget` 的输入框（在工具条之下、正文之上），不占布局空间；实时 `Text.search(nocase=True)` 高亮全部命中，金色高亮当前命中并 `see()` 滚动到位。
-> - **便签打开期间 `_handle_drag_end` 忽略拖选**（同 `ocr_selector`/`pin_wins` 守卫）——不然在便签里选字会弹迷你按钮。
-> - **Esc 关窗**；`_trim` 连段头一起删（正文起点上一行就是段头）。
-
-**搜索为什么比「回搜」更合适**：旧版「回搜」是把光标段前 60 字塞进来源应用的查找框让它自己搜——搜的是原应用、且依赖触发时记录到的来源窗口句柄，容易「没记录到来源窗口」而失效。便签本就是长期攒读物的地方，直接在便签内全文搜索（高亮 + 跳转）才符合用户直觉，也不受来源窗口是否还在的限制。
-
-### 4.13 RAG 快捷问答（v1.7 新增，5 个新模块）
-
-> 架构总览、五阶段流水线与调优实测见上方「RAG 快捷问答」章节；本节只讲模块级实现细节。
-
-**解决"读到的概念要追问原理"的场景**：选中术语/问题按 `Ctrl+Alt+Q` 弹文字动作菜单选 `3 问答`（或托盘菜单「快捷提问(RAG)」，v1.7.3 起不再独占热键）→ 置顶问答窗（多窗并存、流式逐字渲染）→ 回车提问 → 本地知识库检索 + 大模型流式回答，答案附来源章节。
-
-| 组件 | 实现 | 说明 |
-|---|---|---|
-| 检索管线（`rag/engine.py`） | 五阶段：① RAG-Fusion 查询变体（LLM 改写 3 个角度，失败降级仅原问题）→ ② BM25 + bge-m3 向量双路召回 → ③ RRF 融合 → ④ bge-reranker 精排 → ⑤ 上下文组装 + 流式生成 | 单路故障不阻塞：变体/embed/rerank 任一失败自动降级跳过 |
-| 本地知识库（`rag/store.py`） | sqlite FTS5 trigram 分词，库文件随 config 目录走（便携） | 中文无需分词即可子串命中，纯标准库 |
-| 切分（`rag/splitter.py`） | 目标 500 字符/重叠 50；**代码块原子化**——fence 块 ≤3000 字符永不切、独占 chunk，>3000 整块跳过（实测几乎全是数据 blob） | "讲解算法+参考代码"类文档不再被腰斩 |
-| API 封装（`rag/api.py`） | OpenAI 兼容 urllib，chat 走 SSE 流式；`enable_thinking=False` 实测提速 ~4 倍（Qwen3 系）；429/5xx 指数退避重试 | **双源架构**：生成走凭据中心所选厂商，检索（embed/rerank）固定硅基流动 bge-m3 / bge-reranker-v2-m3 |
-| 上下文组装 | 预算 8000 字符（v1.7.2，配合精排 TopK=10）；**同节去重**（同文档同标题链只留最高分块）、**代码配额=1**（防小模型注意力稀释） | 实测 TopK 5→10 后枚举类问题（锁升级/GC Roots）答案完整度显著提升 |
-| PDF 导入（`rag/pdftext.py`） | pypdf 后台线程逐页提取，拼「第 N 页」标题链入库；导入即质量体检（扫描版 / CID 乱码 / 图片页偏多） | pypdf 是全项目唯一第三方依赖例外 |
-| 凭据中心（`qt/config.py`） | 五家厂商（硅基流动/魔搭/智谱/DeepSeek/自定义 OpenAI 兼容）统一管 Key，落盘 DPAPI 加密；生成厂商下拉切换，翻译 LLM 与 RAG 生成共用 | Key 绑定本机本账户，换机需重填（安全设计） |
-| 界面（`qt/ragui.py`） | `QaWindow` 置顶问答窗（多窗并存、win_id 队列路由流式渲染）+ `KbManager` 文档库管理（导入 .txt/.md/.pdf、文件夹递归批量导入、向量进度） | 选中内容只作生成侧「背景」，不混入检索关键词 |
-
-**关键防坑**：生成端点在 RagApi 构建时固化——设置页改厂商后必须重建引擎（v1.7.2 起 `_save` 自动调 `invalidate_rag_engine()`，保存即生效免重启）。
-
-### 4.14 打包与发布流程（v1.7.2 起）
-
-```
-1. 改代码 → smoke 全绿（python tests/smoke.py）→ e2e 双跑（python tests/e2e.py [--exe]）
-2. 改版本号：main.py APP_VERSION + ui.py 页脚 + README 版本日志
-3. 打包：py -3.12 -m PyInstaller QuickTool.spec --noconfirm --clean
-4. 提交：git add <改动文件> && git commit && git tag vX.Y.Z && git push origin main vX.Y.Z
-5. 发布：cp dist/QuickTool.exe dist/QuickTool_vX.Y.Z.exe
-        gh release create vX.Y.Z dist/QuickTool_vX.Y.Z.exe --title "…" --notes-file RELEASE_NOTES_vX.Y.Z.md
-```
-
-产物只发**单个 exe**（dist/logs、config.json 不入库不发版）；exe 与 Release 说明、git tag 三者版本号保持一致。
+Tk 不是线程安全的，所有线程**只通过 `queue.Queue` 单向通信**，绝不跨线程操作控件；抓词/翻译/OCR/RAG 各用独立 worker，一段 10s 的 RAG 回答不会堵住翻译/OCR 排队。
 
 ---
 
-## 五、翻译接口对比与接入
+## 核心实现精选
 
-### 5.1 方案对比（额度截至 2026-08，以官方控制台为准）
+### 抓词链路：快照 → 序列号 → 还原（三重保护）
 
-| 方案 | 费用 | 免费额度 | 速度 | 稳定性 | 需 Key | 隐私 | 推荐场景 |
-|---|---|---|---|---|---|---|---|
-| **MyMemory**（内置默认） | 免费 | 匿名约 5000 字/天，留邮箱 5 万字/天 | 中（~1.3s） | 中，偶尔限流 | 否 | 文本上传 | 日常查词/短句，零成本起步 |
-| Google 网页接口 (gtx) | 免费 | 无明确限制 | 快 | **国内网络基本不可达**（本机实测超时） | 否 | 上传 | 仅海外网络环境 |
-| 腾讯翻译君 TMT | 免费 | **500 万字符/月** | 快 | 高（大厂 SLA） | 是 | 上传 | 主力免费引擎，中文优化好 |
-| 百度翻译 | 免费 | 标准版 QPS=1，个人认证后更高 | 中 | 高 | 是 | 上传 | 需要实名认证，起步略麻烦 |
-| 阿里云机器翻译 | 免费 | 100 万字符/月 | 中 | 高 | 是 | 上传 | 阿里系生态 |
-| **大模型 API**（DeepSeek / 硅基流动 / 智谱 / 通义 / Ollama） | 见下 | 智谱 `glm-4-flash` 全免费；硅基流动部分免费模型 | 中（~1-3s） | 高 | 是 | 上传（敏感内容选 Ollama） | 长句/术语/论文/上下文理解，**质量最优** |
-| **本地 Ollama** + 小模型 | 免费 | 无限制 | 慢（CPU） | 高（本地） | 否 | **完全离线** | 隐私优先、断网环境 |
-| 离线词库（内置 mini_dict / ECDICT） | 免费 | 无限制 | 瞬时 | 高 | 否 | **完全离线** | 查单词兜底，断网也有反应 |
+Windows 没有「读取任意窗口选区」的通用 API，本方案选「模拟 Ctrl+C + 读剪贴板」（浏览器/PDF/Word/IDE/远程桌面通吃），配三重保护：① 抓词前**全格式快照**剪贴板（含图片/文件）；② 用**剪贴板序列号**判断复制是否完成，不盲等；③ 无论成败都**还原**，用户剪贴板无感。组合键注入按步分批（Ctrl↓ → 25ms → C↓↑ → 20ms → Ctrl↑）——零间隔批量注入会被 Word 的异步输入管线当成裸字符提交（表现为「选区被清除、原地多一个 c」）。
 
-**大模型成本量级**（以 DeepSeek 为例）：约 ¥1/百万 tokens，翻译一千个英文单词大约 **¥0.003**，几乎可忽略；响应通常 1~3 秒，质量显著优于机器翻译，尤其擅长处理专业术语与上下文。
+### 拖选卡鼠标：467ms → 23ms
 
-### 5.2 本机实测（2026-08-30，`tests/smoke.py` 第 6 节）
+程序运行时拖一下鼠标会卡半秒。根因：`WH_MOUSE_LL` 钩子回调靠安装线程的消息泵驱动，而抓词（等剪贴板超时 0.45s × 2）原本就跑在同一线程——没选中内容时钩子线程被占住，系统派发的鼠标消息全部被拖住。实测（`tests/drag_lag.py` 统计鼠标消息到达间隔）：基线 22ms，拖选后尖峰 **467ms**；把抓词移出钩子线程后复测 **23ms、>150ms 尖峰 0 个**（跨线程白盒对照：钩子线程往返 800ms → 0ms）。五线程模型就是这次重构确立的。
 
-| 引擎 | 结果 |
-|---|---|
-| MyMemory | ✅ 可用，`artificial intelligence is reshaping the software industry` → 人工智能正在重塑软件行业，~1.3s |
-| Google gtx | ❌ 超时（本机网络环境下不可达） |
-| 离线词库 | ✅ 瞬时，`benchmark` → n. 基准；基准测试 |
-| DeepSeek / 硅基流动 | 端口可达（HTTP 401 = 缺 Key），配置 Key 后即可用 |
+### 剪贴板堆损坏排查实录
 
-### 5.3 各引擎接入配置（设置页 → 凭据中心，v1.7 起）
+程序偶发静默消失。取证（Windows 事件日志 + faulthandler）定位为 `0xc0000374` **堆损坏**——C 层崩溃 Python 捕获不到。根因：CaptureWorker 与主线程同时 `OpenClipboard` 的竞态 + 对 CF_BITMAP 等**非 HGLOBAL 格式**调 `GlobalSize` 读坏堆元数据。修复三件套：① 剪贴板族函数全部走进程内互斥锁串行化；② 非 HGLOBAL 格式黑名单（绝不调 GlobalSize）；③ 有界读取（按 GlobalSize 截断，不信 NUL 终止符）。加固的同时补了三层崩溃取证基建（faulthandler + 三处异常钩子 + 关键事件埋点 + 5 分钟心跳）——「程序为什么没了」从此可追溯。
 
-```jsonc
-// MyMemory / 离线词库：零配置，直接用
-// Google：engine 切 "google"（仅海外网络可达）
+### 截图 OCR：内置 WinRT 引擎桥
 
-// 凭据中心（config.json 对应结构）：五家厂商各填各的 Key，生成厂商下拉切换
-"providers": {
-  "siliconflow": {  "base_url": "https://api.siliconflow.cn/v1",
-                    "api_key": "sk-…", "chat_model": "Qwen/Qwen3-8B" },
-  "modelscope": {   "base_url": "https://api-inference.modelscope.cn/v1",
-                    "api_key": "…",    "chat_model": "Qwen/Qwen3.8-Flash-Next" },
-  "zhipu":        { "base_url": "https://open.bigmodel.cn/api/paas/v4", "chat_model": "glm-4.5-flash" },
-  "deepseek":     { "base_url": "https://api.deepseek.com/v1", "chat_model": "deepseek-chat" },
-  "custom":       { "base_url": "http://localhost:11434/v1" }   // 本地 Ollama 也走这里
-},
-"llm": {
-  "provider": "modelscope",   // 生成厂商 = providers 键名（翻译 LLM + RAG 回答共用）
-  "model": ""                 // 模型覆盖；留空 = 厂商默认 chat_model
-},
+选 Windows.Media.Ocr 而不是 PaddleOCR/Tesseract：完全离线、无 Key、无第三方依赖（后两者要 pip 依赖或外部二进制，打包体积与杀软风险都不可接受）。实现是内嵌 PowerShell 反射调用 WinRT 异步（PS 5.1 需手动拿 `GetAwaiter`）；抓屏用 GDI `BitBlt + CAPTUREBLT` 自拼 BMP——进程做 DPI 感知，避开「DPI 不感知进程抓 125% 缩放屏坐标错位」的坑。
 
-// 引擎调度：
-"engine": "mymemory",            // 主引擎
-"fallback_chain": ["offline"],   // 回退链
-```
+### 截图对照：标准库手写 PNG 编码
 
-> Key 落盘自动 DPAPI 加密（`__dpapi__:` 前缀，仅本机本账户可解）；每厂商的模型历史存在 `providers.<厂商>.models`（设置页下拉直选）。本地 Ollama 完全离线：装好后 `custom` 填 `http://localhost:11434/v1` 即可，敏感数据不出本机。
+对照小窗要显示抓屏位图，但 `tk.PhotoImage` 不认 BMP、PIL 违反零依赖铁律——用标准库 zlib 手写 PNG 编码（8bit RGB + IDAT 压缩）再喂给 Tk。多窗并存（上限 5）用「点谁谁在前」+ 级联偏移 28px 管理，截图自动进剪贴板与 Win+Shift+S 同格式（CF_DIB，走剪贴板互斥锁）。
 
-**推荐的省钱组合**：日常查词用 MyMemory（零配置）；追求质量和上下文用智谱 `glm-4-flash`（完全免费）；断网/隐私场景切 Ollama 或离线词库。
+### 全局热键顺延与便携分发
 
-### 5.4 离线方案
+热键被占用（错误码 1409）自动换用候选链空闲组合并**写回配置**，下次启动直接用记住的组合；程序内部保证同一组合不绑两个功能。分发层面：exe 单文件零安装，config.json 同目录即便携模式（可放 U 盘）、否则落 `%APPDATA%`；换机后热键自动重新顺延落位，OCR 语言包缺失有引导，主功能不受影响。
 
-- **单词级（已内置）**：`data/mini_dict.json` 306 个高频词，断网也能查。
-- **完整离线词典（可选）**：把 ECDICT（77 万词，约 30MB）转成 `word<TAB>释义` 存到 `data/ecdict.txt`，程序启动时自动加载，单机可查所有常见词。
-- **离线整句（可选）**：配置本地 Ollama + `qwen2.5:7b` 之类小模型，`base_url` 填 `http://localhost:11434/v1` 即可，全程数据不出本机。
+> 全部 14 个实现主题（含悬浮窗、迷你按钮钩子细节、便签段定位、日志系统、打包发布流程等）的完整版本：[docs/02-核心实现详解.md](docs/02-核心实现详解.md)
 
 ---
 
-## 六、配置说明
+## 项目结构
 
-配置文件位置（二选一，**程序同目录的 config.json 优先**，绿色便携）：
-
-- 绿色便携模式：`config.json`（exe 同目录）
-- 默认：`%APPDATA%\QuickTool\config.json`
-
-```jsonc
-{
-  "hotkey_translate": "Ctrl+Q",         // 划词翻译直达（被占用自动顺延到 Ctrl+Alt+T → …）
-  "hotkey_textmenu":  "Ctrl+Alt+Q",     // 文字动作菜单：1 翻译 / 2 便签 / 3 问答
-  "hotkey_shotmenu":  "Ctrl+Alt+W",     // 截图动作菜单：框选后 1 对照 / 2 OCR
-                                        // （v1.7.3 起全局热键收敛为 3 个，旧 *_ocr/pin/note/rag/settings/quit 键不再注册）
-
-  "engine": "mymemory",                 // 翻译主引擎
-  "fallback_chain": ["offline"],        // 回退链
-  "source_lang": "auto",
-  "target_lang": "zh-CN",
-
-  // ---- 凭据中心（v1.7）：五家厂商统一管 Key，api_key 落盘 DPAPI 加密 ----
-  "providers": {
-    "siliconflow": {                    // 检索专用：向量/重排固定用这一家
-      "base_url": "https://api.siliconflow.cn/v1",
-      "api_key": "",
-      "chat_model": "Qwen/Qwen3-8B",
-      "embed_model": "BAAI/bge-m3",
-      "rerank_model": "BAAI/bge-reranker-v2-m3",
-      "thinking": true,
-      "models": []                      // 本厂商用过的模型历史（设置页下拉直选）
-    },
-    "modelscope": { "base_url": "https://api-inference.modelscope.cn/v1",
-                    "api_key": "", "chat_model": "Qwen/Qwen3.8-Flash-Next",
-                    "thinking": true, "models": [] },
-    "zhipu":    { "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                  "api_key": "", "chat_model": "glm-4.5-flash", "thinking": false, "models": [] },
-    "deepseek": { "base_url": "https://api.deepseek.com/v1",
-                  "api_key": "", "chat_model": "deepseek-chat", "thinking": false, "models": [] },
-    "custom":   { "base_url": "", "api_key": "", "chat_model": "",
-                  "thinking": false, "models": [] }   // 自定义 OpenAI 兼容端点（Ollama 等）
-  },
-  "llm": {
-    "provider": "siliconflow",          // 生成厂商 = providers 键名（翻译 LLM + RAG 生成共用）
-    "model": "",                        // 模型覆盖；留空 = 所选厂商默认 chat_model
-    "temperature": 0.2,
-    "timeout": 30
-  },
-
-  // ---- RAG 快捷问答（v1.7）----
-  "rag": {
-    "kb":     { "dir": "", "chunk_chars": 500, "chunk_overlap": 50 },
-    "retrieval": {
-      "fusion_variants": 3,             // ① 变体数；1 = 关闭 Fusion（省一次调用）
-      "bm25_top_k": 30,                 // ② BM25 路召回数（v1.7.2 起设置页可调）
-      "vector_top_k": 30,               // ② 向量路召回数
-      "rrf_top_k": 20,                  // ③ RRF 融合后 TOP-20
-      "rerank_top_k": 5,                // ④ 精排后 TOP-5（实测多概念/枚举类问题建议 10）
-      "enable_vector": true,
-      "enable_rerank": true
-    }
-  },
-
-  "popup": { "theme": "dark", "alpha": 0.97, "auto_hide_ms": 0,
-             "max_width": 520, "font_size": 13, "follow_cursor": true },
-  "mini_button": true,                  // 拖选文字后自动弹出『译』『便』迷你按钮
-  "mini_button_maxlen": 200,            // 超过此长度不弹按钮（防误抓整页）
-  "ocr_lang": "auto",                   // 截图 OCR 语言；auto = 优先 en-US
-  "max_chars": 3000,                    // 超长文本截断阈值
-  "autostart": false,                   // 开机自启（写 HKCU Run，无需管理员）
-  "enable_tray": true
-}
 ```
-
-> **热键顺延与持久化（v1.2 修复）**：任一热键被占用（错误码 1409）都会自动换用候选列表里的空闲组合并**写回配置**，下次启动直接用记住的组合，不再弹错误。程序自己也不会把同一组合绑给两个功能（如划词翻译用了 Ctrl+Q，设置热键就不能再用它——会自动顺延）。非核心键（设置/退出/截图）顺延全部失败时只弹一次轻提示，划词翻译键失败才弹致命提示。
+QuickTool/
+├── main.py                # 入口：五线程模型、热键路由、事件分发、RAG worker
+├── QuickTool.spec         # PyInstaller 打包配置（pypdf 瘦身 excludes）
+├── qt/
+│   ├── winapi.py          # 纯 ctypes：热键 / 剪贴板 / 光标 / 托盘 / 抓屏 / 鼠标钩子
+│   ├── capture.py         # 选中文本提取 + PDF 断词清洗
+│   ├── engines.py         # 翻译引擎（MyMemory / Google / LLM / 离线）
+│   ├── translator.py      # 引擎调度：LRU 缓存 + 失败回退链
+│   ├── config.py          # 配置读写 + 凭据中心（五厂商 / DPAPI 加密）+ 开机自启
+│   ├── logging_setup.py   # 三层崩溃取证 + 心跳 + 轮转日志
+│   ├── ocr.py             # Windows.Media.Ocr 桥（内嵌 PowerShell）
+│   ├── ui.py              # 悬浮窗 / 设置 / 便签 / 对照窗 / 选区遮罩 / 迷你按钮
+│   └── ragui.py           # RAG 问答窗 + 文档库管理窗
+├── rag/                   # RAG 引擎（纯标准库 + 云端 embedding/rerank）
+│   ├── engine.py          # 五阶段总装：Fusion → 双路召回 → RRF → Rerank → 生成
+│   ├── store.py           # 本地知识库（sqlite FTS5 trigram）
+│   ├── splitter.py        # fence-aware 切分（代码块原子化）
+│   ├── bm25.py / vectors.py / fusion.py / api.py / pdftext.py
+├── data/mini_dict.json    # 内置离线词库（306 词，断网兜底）
+└── tests/
+    ├── smoke.py           # 冒烟测试（285 项断言）
+    ├── e2e.py             # 端到端：真实按键触发全链路（源码 + 打包双跑）
+    └── perf.py            # 体测：体积 / 启动 / 内存
+```
 
 ---
 
 ## 开发者文档（docs/）
 
-> 以下内容自主 README 拆分，面向开发者与 AI 辅助开发——改代码前建议先查对应文档，尤其 11 号文档的踩坑大事记。
+> 面向开发者与 AI 辅助开发——改代码前建议先查对应文档，尤其 09 号文档的踩坑大事记。
 
 | 文档 | 内容 |
 |---|---|
-| [07-打包与发布](docs/07-打包与发布.md) | PyInstaller 打包步骤、spec 关键配置、体积/性能优化与实测数据 |
-| [08-方案优缺点与适用场景](docs/08-方案优缺点与适用场景.md) | 自研 vs 成熟软件 vs 改造现成项目的取舍分析 |
-| [09-自动化测试](docs/09-自动化测试.md) | smoke / e2e / 加固 / 真 App 驱动全套测试矩阵与实测结果 |
-| [10-后续扩展方向](docs/10-后续扩展方向.md) | 已落底项与当前候选方向（按价值排序） |
-| [11-版本演进与踩坑大事记](docs/11-版本演进与踩坑大事记.md) | v1.4 → v1.7.3 按版本的完整踩坑、修复过程与实测数据 |
+| [01-开源方案调研](docs/01-开源方案调研.md) | 7 个同类项目对比、为什么不改造现成项目、借鉴了什么 |
+| [02-核心实现详解](docs/02-核心实现详解.md) | 全部 14 个实现主题的完整细节（热键/抓词/线程/OCR/对照/便签/RAG/日志…） |
+| [03-翻译接口与凭据](docs/03-翻译接口与凭据.md) | 8 种翻译方案对比、本机实测、各引擎接入配置、离线方案 |
+| [04-配置说明](docs/04-配置说明.md) | 配置文件结构、便携模式、换机迁移注意事项 |
+| [05-打包与发布](docs/05-打包与发布.md) | PyInstaller 步骤、spec 关键配置、体积/性能优化与实测数据 |
+| [06-方案优缺点与适用场景](docs/06-方案优缺点与适用场景.md) | 自研 vs 成熟软件 vs 改造现成项目的取舍分析 |
+| [07-自动化测试](docs/07-自动化测试.md) | smoke / e2e / 加固 / 真 App 驱动全套测试矩阵与实测结果 |
+| [08-后续扩展方向](docs/08-后续扩展方向.md) | 已落底项与当前候选方向（按价值排序） |
+| [09-版本演进与踩坑大事记](docs/09-版本演进与踩坑大事记.md) | v1.4 → v1.7.3 按版本的完整踩坑、修复过程与实测数据 |
 
 ---
 
